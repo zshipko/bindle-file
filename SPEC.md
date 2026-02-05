@@ -13,7 +13,7 @@ The file contains an 8 byte signature, followed by the data and then the metadat
 | `0x00` | **Header** | 8-byte magic identification string. |
 | `0x08` | **Data Payload** | Sequential blobs of raw or compressed data. |
 | `Variable` | **Index** | A sequence of metadata entries and filenames. |
-| `EOF - 20` | **Footer** | Pointer to the index and file count. |
+| `EOF - 16` | **Footer** | Pointer to the index and file count. |
 
 ---
 
@@ -40,16 +40,17 @@ The index consists of a series of entries. Each entry is a fixed-size header fol
 | `name_len` | 2 bytes | u16 | Length of the following filename string. |
 | `comp_type` | 1 byte | u8 | `0` = Raw, `1` = Zstd. |
 | `reserved` | 1 byte | u8 | Alignment padding. |
+| `filename` | variable | utf8 | Filename string
 
 **Padding:** After the filename string, the file MUST be padded with null bytes until the next 8-byte boundary is reached.
 
 ### 2.4 Footer
-The last 20 bytes of the file contain the lookup information required to parse the archive.
+The last 16 bytes of the file contain the lookup information required to parse the archive.
 
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `index_offset` | 8 bytes | u64 | Absolute offset to the start of the Index. |
-| `entry_count` | 4 bytes | u32 | Total number of entries in the file. |
+| `entry_count` | 8 bytes | u32 | Total number of entries in the file. |
 
 ---
 
@@ -59,7 +60,7 @@ The last 20 bytes of the file contain the lookup information required to parse t
 To read a Bindle file:
 1. Validate the file size (must be at least 28 bytes).
 2. Read the first 8 bytes and the last 8 bytes to verify the `BINDL001` magic.
-3. Read the `index_offset` from the footer (EOF - 20).
+3. Read the `index_offset` from the footer (EOF - 16).
 4. Seek to `index_offset` and iterate `entry_count` times to populate an in-memory map of files.
 
 ### 3.2 Writing Logic (Atomic Updates)

@@ -30,7 +30,7 @@ pub struct Entry {
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Debug)]
 struct Footer {
     pub index_offset: [u8; 8],
-    pub entry_count: [u8; 4],
+    pub entry_count: [u8; 8],
 }
 
 pub struct Bindle {
@@ -88,7 +88,7 @@ impl Bindle {
 
         // If magic is valid, proceed to parse the index
         let data_end = u64::from_le_bytes(footer.index_offset);
-        let count = u32::from_le_bytes(footer.entry_count);
+        let count = u64::from_le_bytes(footer.entry_count);
         let mut entries = Vec::with_capacity(count as usize);
 
         let mut cursor = data_end as usize;
@@ -244,7 +244,7 @@ impl Bindle {
 
         let footer = Footer {
             index_offset: index_start.to_le_bytes(),
-            entry_count: (self.entries.len() as u32).to_le_bytes(),
+            entry_count: (self.entries.len() as u64).to_le_bytes(),
         };
 
         self.file.write_all(footer.as_bytes())?;
