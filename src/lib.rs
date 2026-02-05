@@ -168,7 +168,7 @@ impl Bindle {
     }
 
     pub fn add(&mut self, name: &str, data: &[u8], compress: bool) -> io::Result<()> {
-        // 1. Prevent Duplicate Keys
+        // Prevent Duplicate Keys
         if self
             .entries
             .iter()
@@ -180,7 +180,7 @@ impl Bindle {
             ));
         }
 
-        // 2. Position the file pointer at the end of valid data
+        // Position the file pointer at the end of valid data
         // If data_end is 0, we start after the 8-byte Magic Header
         let write_pos = if self.data_end >= HEADER_SIZE {
             self.data_end
@@ -190,7 +190,7 @@ impl Bindle {
 
         self.file.seek(SeekFrom::Start(write_pos))?;
 
-        // 3. Prepare and write data
+        // Prepare and write data
         let write_data = if compress {
             zstd::encode_all(data, 3)?
         } else {
@@ -200,7 +200,7 @@ impl Bindle {
         let start_offset = self.file.stream_position()?;
         self.file.write_all(&write_data)?;
 
-        // 4. Align to 8 bytes for the next entry or index
+        // Align to 8 bytes for the next entry or index
         let current_pos = self.file.stream_position()?;
         let pad = (BNDL_ALIGN as u64 - (current_pos % BNDL_ALIGN as u64)) % BNDL_ALIGN as u64;
         if pad > 0 {
@@ -252,6 +252,10 @@ impl Bindle {
     /// Returns a list of all entry names in the archive.
     pub fn list(&self) -> Vec<&str> {
         self.entries.iter().map(|(_, name)| name.as_str()).collect()
+    }
+
+    pub fn entries(&self) -> &[(Entry, String)] {
+        &self.entries
     }
 
     /// Returns the number of entries.
