@@ -40,6 +40,10 @@ void bindle_free(struct BindleContext *ctx);
 
 uint8_t *bindle_read(struct BindleContext *ctx, const char *name, size_t *out_len);
 
+const uint8_t *bindle_read_uncompressed_direct(struct BindleContext *ctx,
+                                               const char *name,
+                                               size_t *out_len);
+
 void bindle_free_buffer(uint8_t *ptr, size_t len);
 
 size_t bindle_length(const struct BindleContext *ctx);

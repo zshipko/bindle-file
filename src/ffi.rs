@@ -108,6 +108,34 @@ pub unsafe extern "C" fn bindle_read(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_read_uncompressed_direct(
+    ctx: *mut BindleContext,
+    name: *const c_char,
+    out_len: *mut usize,
+) -> *const u8 {
+    if ctx.is_null() || name.is_null() || out_len.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let b = &(*ctx).inner;
+        if let Some(data) = b.read(name_str) {
+            match data {
+                std::borrow::Cow::Borrowed(bytes) => bytes.as_ptr(),
+                _ => std::ptr::null_mut(),
+            }
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_free_buffer(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
         unsafe {
