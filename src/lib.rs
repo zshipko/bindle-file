@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use memmap2::Mmap;
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
@@ -46,6 +47,8 @@ impl Bindle {
             .write(true)
             .create(true)
             .open(path)?;
+
+        file.lock_shared()?;
 
         let len = file.metadata()?.len();
 
@@ -224,6 +227,8 @@ impl Bindle {
     }
 
     pub fn save(&mut self) -> io::Result<()> {
+        self.file.lock_exclusive()?;
+
         self.file.seek(SeekFrom::Start(self.data_end))?;
         let index_start = self.data_end;
 
@@ -244,8 +249,9 @@ impl Bindle {
 
         self.file.write_all(footer.as_bytes())?;
         self.file.flush()?;
-
         self.mmap = Some(unsafe { Mmap::map(&self.file)? });
+        self.file.lock_shared()?;
+
         Ok(())
     }
 
@@ -265,6 +271,12 @@ impl Bindle {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+impl Drop for Bindle {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 

@@ -17,6 +17,7 @@ memmap2 = "0.9.9"
 zerocopy = { version = "0.8.38", features = ["std", "derive"] }
 zstd = "0.13.3"
 clap = { version = "4.5", features = ["derive"], optional = true }
+fs2 = "0.4.3"
 
 [features]
 default = ["cli"]
