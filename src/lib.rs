@@ -3,7 +3,7 @@ use memmap2::Mmap;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned};
 
@@ -100,7 +100,34 @@ pub enum Either<A, B> {
     Right(B),
 }
 
-pub struct Stream<'a> {
+pub struct Reader<'a> {
+    decoder: Either<zstd::Decoder<'static, BufReader<io::Cursor<&'a [u8]>>>, io::Cursor<&'a [u8]>>,
+}
+
+impl<'a> Read for Reader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &mut self.decoder {
+            Either::Left(x) => x.read(buf),
+            Either::Right(x) => x.read(buf),
+        }
+    }
+}
+
+// Note: Seeking is only supported for uncompressed entries in this simple implementation.
+// Seeking in compressed streams requires a frame-aware decoder.
+impl<'a> Seek for Reader<'a> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match &mut self.decoder {
+            Either::Left(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Seeking not supported on compressed streams",
+            )),
+            Either::Right(x) => x.seek(pos),
+        }
+    }
+}
+
+pub struct Writer<'a> {
     pub(crate) bindle: &'a mut Bindle,
     pub(crate) encoder: Option<zstd::Encoder<'a, std::fs::File>>,
     pub(crate) name: String,
@@ -108,7 +135,7 @@ pub struct Stream<'a> {
     pub(crate) uncompressed_size: u64,
 }
 
-impl<'a> std::io::Write for Stream<'a> {
+impl<'a> std::io::Write for Writer<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write_chunk(buf)?;
         Ok(buf.len())
@@ -119,7 +146,7 @@ impl<'a> std::io::Write for Stream<'a> {
     }
 }
 
-impl<'a> Stream<'a> {
+impl<'a> Writer<'a> {
     pub fn write_chunk(&mut self, data: &[u8]) -> io::Result<()> {
         self.uncompressed_size += data.len() as u64;
 
@@ -276,7 +303,7 @@ impl Bindle {
     }
 
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
-        let mut stream = self.stream(name, compress)?;
+        let mut stream = self.writer(name, compress)?;
         stream.write_all(data)?;
         stream.finish()?;
         Ok(())
@@ -288,7 +315,7 @@ impl Bindle {
         path: impl AsRef<Path>,
         compress: Compress,
     ) -> io::Result<()> {
-        let mut stream = self.stream(name, compress)?;
+        let mut stream = self.writer(name, compress)?;
         let mut src = std::fs::File::open(path)?;
         std::io::copy(&mut src, &mut stream)?;
         Ok(())
@@ -302,7 +329,7 @@ impl Bindle {
         for (name, entry) in &self.index {
             self.file.write_all(entry.as_bytes())?;
             self.file.write_all(name.as_bytes())?;
-            let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len()); // (BNDL_ALIGN - ((ENTRY_SIZE + name.len()) % BNDL_ALIGN)) % BNDL_ALIGN;
+            let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
             if pad > 0 {
                 self.file.write_all(&vec![0u8; pad])?;
             }
@@ -411,29 +438,40 @@ impl Bindle {
         }
     }
 
-    pub fn read_to<W: std::io::Write>(&self, name: &str, mut w: W) -> std::io::Result<()> {
+    /// Read to an `std::io::Write`
+    pub fn read_to<W: std::io::Write>(&self, name: &str, mut w: W) -> std::io::Result<u64> {
+        std::io::copy(&mut self.reader(name)?, &mut w)
+    }
+
+    // Returns a seekable reader for an entry.
+    /// If compressed, it provides a transparently decompressing stream.
+    pub fn reader<'a>(&'a self, name: &str) -> io::Result<Reader<'a>> {
         let entry = self
             .index
             .get(name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid entry"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Entry not found"))?;
+
+        let start = entry.offset() as usize;
+        let end = start + entry.compressed_size() as usize;
         let mmap = self
             .mmap
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing mmap"))?;
-        let data = mmap
-            .get(entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid mmap offset"))?;
+        let data_slice = &mmap[start..end];
 
-        if entry.compression_type == Compress::Zstd as u8 {
-            std::io::copy(
-                &mut zstd::Decoder::new(data)
-                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
-                &mut w,
-            )?;
+        let cursor = io::Cursor::new(data_slice);
+
+        if entry.compression_type == 1 {
+            // Zstd streaming decoder
+            let decoder = zstd::Decoder::new(cursor)?;
+            Ok(Reader {
+                decoder: Either::Left(decoder),
+            })
         } else {
-            w.write_all(&data)?;
+            Ok(Reader {
+                decoder: Either::Right(cursor),
+            })
         }
-        Ok(())
     }
 
     /// The number of entries
@@ -506,12 +544,12 @@ impl Bindle {
         Ok(())
     }
 
-    pub fn stream<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Stream<'a>> {
+    pub fn writer<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Writer<'a>> {
         self.file.seek(SeekFrom::Start(self.data_end))?;
         let compress = self.should_auto_compress(compress, 0);
         let f = self.file.try_clone()?;
         let start_offset = self.data_end;
-        Ok(Stream {
+        Ok(Writer {
             name: name.to_string(),
             bindle: self,
             encoder: if compress {
@@ -747,7 +785,7 @@ mod tests {
             let mut b = Bindle::open(path).expect("Failed to open");
             // Start a stream without compression
             let mut s = b
-                .stream("streamed_file.txt", Compress::None)
+                .writer("streamed_file.txt", Compress::None)
                 .expect("Failed to start stream");
 
             // Write chunks manually

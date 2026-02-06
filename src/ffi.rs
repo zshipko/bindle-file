@@ -1,11 +1,11 @@
 use std::alloc::{Layout, dealloc};
 use std::ffi::CStr;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::mem;
 use std::os::raw::c_char;
 use std::slice;
 
-use crate::{Bindle, Compress, Stream};
+use crate::{Bindle, Compress, Reader, Writer};
 
 /// Open a bindle file from disk, the path paramter should be NUL terminated
 #[unsafe(no_mangle)]
@@ -305,19 +305,19 @@ pub unsafe extern "C" fn bindle_exists(ctx: *const Bindle, name: *const c_char) 
     b.exists(name_str)
 }
 
-/// Create a new Stream, while the stream is active (until bindle_stream_finish is called), the
+/// Create a new Writer, while the stream is active (until bindle_stream_finish is called), the
 /// Bindle struct should not be accessed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_stream_new<'a>(
+pub unsafe extern "C" fn bindle_writer_new<'a>(
     ctx: *mut Bindle,
     name: *const c_char,
     compress: Compress,
-) -> *mut Stream<'a> {
+) -> *mut Writer<'a> {
     unsafe {
         let b = &mut *ctx;
         let name_str = CStr::from_ptr(name).to_string_lossy();
 
-        match b.stream(&name_str, compress) {
+        match b.writer(&name_str, compress) {
             Ok(stream) => Box::into_raw(Box::new(std::mem::transmute(stream))),
             Err(_) => std::ptr::null_mut(),
         }
@@ -325,8 +325,8 @@ pub unsafe extern "C" fn bindle_stream_new<'a>(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_stream_write(
-    stream: *mut Stream,
+pub unsafe extern "C" fn bindle_writer_write(
+    stream: *mut Writer,
     data: *const u8,
     len: usize,
 ) -> bool {
@@ -338,8 +338,54 @@ pub unsafe extern "C" fn bindle_stream_write(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_stream_finish(stream: *mut Stream) -> bool {
+pub unsafe extern "C" fn bindle_writer_finish(stream: *mut Writer) -> bool {
     // Reclaim memory from the Box and call finish()
     let s = unsafe { Box::from_raw(stream) };
     s.finish().is_ok()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_reader_new<'a>(
+    ctx: *const Bindle,
+    name: *const c_char,
+) -> *mut Reader<'a> {
+    if ctx.is_null() || name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let b = unsafe { &*ctx };
+    let name_str = unsafe { CStr::from_ptr(name).to_string_lossy() };
+
+    match b.reader(&name_str) {
+        Ok(reader) => Box::into_raw(Box::new(reader)),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_reader_read(
+    reader: *mut Reader,
+    buffer: *mut u8,
+    buffer_len: usize,
+) -> isize {
+    if reader.is_null() || buffer.is_null() {
+        return -1;
+    }
+
+    let r = unsafe { &mut *reader };
+    let out_slice = unsafe { slice::from_raw_parts_mut(buffer, buffer_len) };
+
+    match r.read(out_slice) {
+        Ok(n) => n as isize,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_reader_free(reader: *mut Reader) {
+    if !reader.is_null() {
+        unsafe {
+            drop(Box::from_raw(reader));
+        }
+    }
 }

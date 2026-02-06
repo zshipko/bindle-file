@@ -20,7 +20,9 @@ typedef enum BindleCompress {
 
 typedef struct Bindle Bindle;
 
-typedef struct BindleStream BindleStream;
+typedef struct BindleReader BindleReader;
+
+typedef struct BindleWriter BindleWriter;
 
 /**
  * Open a bindle file from disk, the path paramter should be NUL terminated
@@ -97,15 +99,21 @@ bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress c
 bool bindle_exists(const struct Bindle *ctx, const char *name);
 
 /**
- * Create a new Stream, while the stream is active (until bindle_stream_finish is called), the
+ * Create a new Writer, while the stream is active (until bindle_stream_finish is called), the
  * Bindle struct should not be accessed.
  */
-struct BindleStream *bindle_stream_new(struct Bindle *ctx,
+struct BindleWriter *bindle_writer_new(struct Bindle *ctx,
                                        const char *name,
                                        enum BindleCompress compress);
 
-bool bindle_stream_write(struct BindleStream *stream, const uint8_t *data, size_t len);
+bool bindle_writer_write(struct BindleWriter *stream, const uint8_t *data, size_t len);
 
-bool bindle_stream_finish(struct BindleStream *stream);
+bool bindle_writer_finish(struct BindleWriter *stream);
+
+struct BindleReader *bindle_reader_new(const struct Bindle *ctx, const char *name);
+
+ptrdiff_t bindle_reader_read(struct BindleReader *reader, uint8_t *buffer, size_t buffer_len);
+
+void bindle_reader_free(struct BindleReader *reader);
 
 #endif  /* BINDLE_H */
