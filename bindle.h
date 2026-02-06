@@ -12,37 +12,59 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+typedef enum BindleCompress {
+  BindleCompressNone,
+  BindleCompressZstd,
+} BindleCompress;
+
 typedef struct Bindle Bindle;
 
+/**
+ * Open a bindle file from disk, the path paramter should be NUL terminated
+ */
 struct Bindle *bindle_open(const char *path);
 
 /**
- * Adds a new entry. Returns true on success.
+ * Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
+ * is provided
  */
 bool bindle_add(struct Bindle *ctx,
                 const char *name,
                 const uint8_t *data,
                 size_t data_len,
-                bool compress);
+                enum BindleCompress compress);
 
 /**
- * Commits changes to disk.
+ * Save any changed to disk
  */
 bool bindle_save(struct Bindle *ctx);
 
 /**
- * Frees BindleContext
+ * Close an open bindle file
  */
 void bindle_close(struct Bindle *ctx);
 
+/**
+ * Read a value from a bindle file in memory, returns a pointer that should be freed with
+ * `bindle_free_buffer`
+ */
 uint8_t *bindle_read(struct Bindle *ctx_ptr, const char *name, size_t *out_len);
 
+/**
+ * Used to free the results from `bindle_read`
+ */
 void bindle_free_buffer(uint8_t *ptr);
 
+/**
+ * Directly read an uncompressed entry from disk, returns NULL if the entry is compressed or doesn't exist
+ */
 const uint8_t *bindle_read_uncompressed_direct(struct Bindle *ctx,
                                                const char *name,
                                                size_t *out_len);
 
+/**
+ * Get the number of entries in a bindle file
+ */
 size_t bindle_length(const struct Bindle *ctx);
 
 /**
@@ -51,6 +73,9 @@ size_t bindle_length(const struct Bindle *ctx);
  */
 const char *bindle_entry_name(const struct Bindle *ctx, size_t index, size_t *len);
 
+/**
+ * Compact and rewrite bindle file
+ */
 bool bindle_vacuum(struct Bindle *ctx);
 
 #endif  /* BINDLE_H */

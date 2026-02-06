@@ -7,17 +7,25 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned};
 
-mod ffi;
+pub(crate) mod ffi;
 
 const BNDL_MAGIC: &[u8; 8] = b"BINDL001";
 const BNDL_ALIGN: usize = 8;
-const ENTRY_SIZE: usize = std::mem::size_of::<BindleEntry>();
-const FOOTER_SIZE: usize = std::mem::size_of::<BindleFooter>();
+const ENTRY_SIZE: usize = std::mem::size_of::<Entry>();
+const FOOTER_SIZE: usize = std::mem::size_of::<Footer>();
 const HEADER_SIZE: u64 = 8;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Compress {
+    #[default]
+    None,
+    Zstd,
+}
 
 #[repr(C, packed)]
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Clone, Copy, Debug, Default)]
-pub struct BindleEntry {
+pub struct Entry {
     pub offset: [u8; 8], // Use [u8; 8] for disk stability
     pub compressed_size: [u8; 8],
     pub uncompressed_size: [u8; 8],
@@ -28,7 +36,7 @@ pub struct BindleEntry {
 }
 
 // Add helpers to convert back to numbers for Rust logic
-impl BindleEntry {
+impl Entry {
     pub fn offset(&self) -> u64 {
         u64::from_le_bytes(self.offset)
     }
@@ -44,11 +52,19 @@ impl BindleEntry {
     pub fn name_len(&self) -> usize {
         u16::from_le_bytes(self.name_len) as usize
     }
+
+    pub fn compression_type(&self) -> Compress {
+        match self.compression_type {
+            0 => Compress::None,
+            1 => Compress::Zstd,
+            _ => Compress::default(),
+        }
+    }
 }
 
 #[repr(C, packed)]
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Debug)]
-struct BindleFooter {
+struct Footer {
     pub index_offset: u64,
     pub entry_count: u64,
 }
@@ -57,7 +73,7 @@ pub struct Bindle {
     path: PathBuf,
     file: File,
     mmap: Option<Mmap>,
-    index: BTreeMap<String, BindleEntry>,
+    index: BTreeMap<String, Entry>,
     data_end: u64,
 }
 
@@ -91,7 +107,7 @@ impl Bindle {
 
         let m = unsafe { Mmap::map(&file)? };
         let footer_pos = m.len() - FOOTER_SIZE;
-        let footer = BindleFooter::read_from_bytes(&m[footer_pos..]).unwrap();
+        let footer = Footer::read_from_bytes(&m[footer_pos..]).unwrap();
 
         let data_end = footer.index_offset;
         let count = footer.entry_count;
@@ -99,7 +115,7 @@ impl Bindle {
 
         let mut cursor = data_end as usize;
         for _ in 0..count {
-            let entry = BindleEntry::read_from_bytes(&m[cursor..cursor + ENTRY_SIZE]).unwrap();
+            let entry = Entry::read_from_bytes(&m[cursor..cursor + ENTRY_SIZE]).unwrap();
             let n_start = cursor + ENTRY_SIZE;
             let name =
                 String::from_utf8_lossy(&m[n_start..n_start + entry.name_len()]).into_owned();
@@ -136,7 +152,7 @@ impl Bindle {
 
         self.data_end = offset + c_size + pad;
 
-        let entry = BindleEntry {
+        let entry = Entry {
             offset: offset.to_le_bytes(),
             compressed_size: c_size.to_le_bytes(),
             uncompressed_size: (data.len() as u64).to_le_bytes(),
@@ -163,7 +179,7 @@ impl Bindle {
             }
         }
 
-        let footer = BindleFooter {
+        let footer = Footer {
             index_offset: index_start,
             entry_count: self.index.len() as u64,
         };
@@ -176,34 +192,78 @@ impl Bindle {
 
     pub fn vacuum(&mut self) -> io::Result<()> {
         let tmp_path = self.path.with_extension("tmp");
-        let mut new_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        new_file.write_all(BNDL_MAGIC)?;
-        let mut current_offset = HEADER_SIZE;
 
-        for entry in self.index.values_mut() {
-            let mut buf = vec![0u8; entry.compressed_size() as usize];
-            self.file.seek(SeekFrom::Start(entry.offset()))?;
-            self.file.read_exact(&mut buf)?;
+        // 1. Create and populate the temporary file
+        {
+            let mut new_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?;
 
-            new_file.seek(SeekFrom::Start(current_offset))?;
-            new_file.write_all(&buf)?;
+            new_file.write_all(BNDL_MAGIC)?;
+            let mut current_offset = HEADER_SIZE;
 
-            entry.offset = current_offset.to_le_bytes();
-            let pad = (8 - (entry.compressed_size() % 8)) % 8;
-            if pad > 0 {
-                new_file.write_all(&vec![0u8; pad as usize])?;
+            // Copy only live entries to the new file
+            for entry in self.index.values_mut() {
+                let mut buf = vec![0u8; entry.compressed_size() as usize];
+                self.file.seek(SeekFrom::Start(entry.offset()))?;
+                self.file.read_exact(&mut buf)?;
+
+                new_file.seek(SeekFrom::Start(current_offset))?;
+                new_file.write_all(&buf)?;
+
+                entry.offset = current_offset.to_le_bytes();
+                let pad = (8 - (entry.compressed_size() % 8)) % 8;
+                if pad > 0 {
+                    new_file.write_all(&vec![0u8; pad as usize])?;
+                }
+                current_offset += entry.compressed_size() + pad;
             }
-            current_offset += entry.compressed_size() + pad;
+
+            // Write the index and footer to the TEMP file before closing it
+            let index_start = current_offset;
+            for (name, entry) in &self.index {
+                new_file.write_all(entry.as_bytes())?;
+                new_file.write_all(name.as_bytes())?;
+                let pad = (BNDL_ALIGN - ((ENTRY_SIZE + name.len()) % BNDL_ALIGN)) % BNDL_ALIGN;
+                if pad > 0 {
+                    new_file.write_all(&vec![0u8; pad])?;
+                }
+            }
+
+            let footer = Footer {
+                index_offset: index_start,
+                entry_count: self.index.len() as u64,
+            };
+            new_file.write_all(footer.as_bytes())?;
+            new_file.sync_all()?;
+            // new_file is closed here when it goes out of scope
         }
 
-        self.data_end = current_offset;
-        self.file = new_file;
-        self.save()?;
-        std::fs::rename(tmp_path, &self.path)?;
+        // 2. CRITICAL: Release ALL handles to the original file
+        drop(self.mmap.take());
+        let _ = self.file.unlock();
+
+        // Re-open self.file in a way that allows us to drop it immediately
+        let old_file = std::mem::replace(&mut self.file, File::open(&tmp_path)?);
+        drop(old_file);
+
+        // 3. Perform the atomic rename while no handles point to the original path
+        std::fs::rename(&tmp_path, &self.path)?;
+
+        // 4. Re-establish the state for the Bindle struct
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        file.lock_shared()?;
+        let mmap = unsafe { Mmap::map(&file)? };
+
+        let footer_pos = mmap.len() - FOOTER_SIZE;
+        let footer = Footer::read_from_bytes(&mmap[footer_pos..]).unwrap();
+
+        self.file = file;
+        self.mmap = Some(mmap);
+        self.data_end = footer.index_offset;
+
         Ok(())
     }
 
@@ -230,7 +290,7 @@ impl Bindle {
         self.index.is_empty()
     }
 
-    pub fn index(&self) -> &BTreeMap<String, BindleEntry> {
+    pub fn index(&self) -> &BTreeMap<String, Entry> {
         &self.index
     }
 }
@@ -330,6 +390,67 @@ mod tests {
 
         let res = Bindle::open(path);
         assert!(res.is_err());
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_key_shadowing() {
+        let path = "test_shadow.bindl";
+        let _ = fs::remove_file(path);
+
+        let mut b = Bindle::open(path).expect("Failed to open");
+
+        // 1. Add initial version
+        b.add("config.txt", b"v1", false).unwrap();
+        b.save().unwrap();
+
+        // 2. Overwrite with v2 (shadowing)
+        b.add("config.txt", b"version_2_is_longer", false).unwrap();
+        b.save().unwrap();
+
+        // 3. Verify latest version is retrieved
+        let b2 = Bindle::open(path).expect("Failed to reopen");
+        let result = b2.read("config.txt").unwrap();
+        assert_eq!(result.as_ref(), b"version_2_is_longer");
+
+        // 4. Verify index count hasn't grown (still 1 entry)
+        assert_eq!(b2.len(), 1);
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_vacuum_reclaims_space() {
+        let path = "test_vacuum.bindl";
+        let _ = fs::remove_file(path);
+
+        let mut b = Bindle::open(path).expect("Failed to open");
+
+        // 1. Add a large file
+        let large_data = vec![0u8; 1024];
+        b.add("large.bin", &large_data, false).unwrap();
+        b.save().unwrap();
+        let size_v1 = fs::metadata(path).unwrap().len();
+
+        // 2. Shadow it with a tiny file
+        b.add("large.bin", b"tiny", false).unwrap();
+        b.save().unwrap();
+        let size_v2 = fs::metadata(path).unwrap().len();
+
+        // Size should have increased because we appended 'tiny'
+        assert!(size_v2 > size_v1);
+
+        // 3. Run Vacuum
+        b.vacuum().expect("Vacuum failed");
+        let size_v3 = fs::metadata(path).unwrap().len();
+
+        // 4. Verify size is now significantly smaller (reclaimed 1024 bytes)
+        assert!(size_v3 < size_v2);
+
+        // 5. Verify data integrity after vacuum
+        let b2 = Bindle::open(path).unwrap();
+        assert_eq!(b2.read("large.bin").unwrap().as_ref(), b"tiny");
 
         fs::remove_file(path).ok();
     }

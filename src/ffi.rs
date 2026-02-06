@@ -4,8 +4,9 @@ use std::mem;
 use std::os::raw::c_char;
 use std::slice;
 
-use crate::Bindle;
+use crate::{Bindle, Compress};
 
+/// Open a bindle file from disk, the path paramter should be NUL terminated
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_open(path: *const c_char) -> *mut Bindle {
     if path.is_null() {
@@ -26,14 +27,15 @@ pub unsafe extern "C" fn bindle_open(path: *const c_char) -> *mut Bindle {
     }
 }
 
-/// Adds a new entry. Returns true on success.
+/// Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
+/// is provided
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_add(
     ctx: *mut Bindle,
     name: *const c_char,
     data: *const u8,
     data_len: usize,
-    compress: bool,
+    compress: Compress,
 ) -> bool {
     if ctx.is_null() || name.is_null() || (data.is_null() && data_len > 0) {
         return false;
@@ -48,11 +50,12 @@ pub unsafe extern "C" fn bindle_add(
         let data_slice = slice::from_raw_parts(data, data_len);
         let b = &mut (*ctx);
 
-        b.add(name_str, data_slice, compress).is_ok()
+        b.add(name_str, data_slice, compress == Compress::Zstd)
+            .is_ok()
     }
 }
 
-/// Commits changes to disk.
+/// Save any changed to disk
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_save(ctx: *mut Bindle) -> bool {
     if ctx.is_null() {
@@ -64,7 +67,7 @@ pub unsafe extern "C" fn bindle_save(ctx: *mut Bindle) -> bool {
     }
 }
 
-/// Frees BindleContext
+/// Close an open bindle file
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_close(ctx: *mut Bindle) {
     if ctx.is_null() {
@@ -73,6 +76,8 @@ pub unsafe extern "C" fn bindle_close(ctx: *mut Bindle) {
     unsafe { drop(Box::from_raw(ctx)) }
 }
 
+/// Read a value from a bindle file in memory, returns a pointer that should be freed with
+/// `bindle_free_buffer`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_read(
     ctx_ptr: *mut Bindle,
@@ -132,6 +137,7 @@ unsafe fn wrap_in_ffi_header(data: &[u8], out_len: *mut usize) -> *mut u8 {
     }
 }
 
+/// Used to free the results from `bindle_read`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_free_buffer(ptr: *mut u8) {
     unsafe {
@@ -156,6 +162,7 @@ pub unsafe extern "C" fn bindle_free_buffer(ptr: *mut u8) {
     }
 }
 
+/// Directly read an uncompressed entry from disk, returns NULL if the entry is compressed or doesn't exist
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_read_uncompressed_direct(
     ctx: *mut Bindle,
@@ -184,6 +191,7 @@ pub unsafe extern "C" fn bindle_read_uncompressed_direct(
     }
 }
 
+/// Get the number of entries in a bindle file
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_length(ctx: *const Bindle) -> usize {
     if ctx.is_null() {
@@ -216,6 +224,7 @@ pub unsafe extern "C" fn bindle_entry_name(
     }
 }
 
+/// Compact and rewrite bindle file
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_vacuum(ctx: *mut Bindle) -> bool {
     if ctx.is_null() {
