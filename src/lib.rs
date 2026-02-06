@@ -276,35 +276,9 @@ impl Bindle {
     }
 
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
-        let compress = self.should_auto_compress(compress, data.len());
-        let (processed, c_type) = if compress {
-            (Cow::Owned(zstd::encode_all(data, 3)?), Compress::Zstd)
-        } else {
-            (Cow::Borrowed(data), Compress::None)
-        };
-
-        self.file.seek(SeekFrom::Start(self.data_end))?;
-        self.file.write_all(&processed)?;
-
-        let offset = self.data_end;
-        let c_size = processed.len() as u64;
-        let pad = pad::<8, u64>(c_size);
-        if pad > 0 {
-            self.file.write_all(&vec![0u8; pad as usize])?;
-        }
-
-        self.data_end = offset + c_size + pad;
-
-        let entry = Entry {
-            offset: offset.to_le_bytes(),
-            compressed_size: c_size.to_le_bytes(),
-            uncompressed_size: (data.len() as u64).to_le_bytes(),
-            compression_type: c_type as u8,
-            name_len: (name.len() as u16).to_le_bytes(),
-            ..Default::default()
-        };
-
-        self.index.insert(name.to_string(), entry);
+        let mut stream = self.stream(name, compress)?;
+        stream.write_all(data)?;
+        stream.finish()?;
         Ok(())
     }
 
@@ -428,7 +402,7 @@ impl Bindle {
         let data =
             mmap.get(entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize)?;
 
-        if entry.compression_type == 1 {
+        if entry.compression_type == Compress::Zstd as u8 {
             let mut out = Vec::with_capacity(entry.uncompressed_size() as usize);
             zstd::Decoder::new(data).ok()?.read_to_end(&mut out).ok()?;
             Some(Cow::Owned(out))
@@ -450,7 +424,7 @@ impl Bindle {
             .get(entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid mmap offset"))?;
 
-        if entry.compression_type == 1 {
+        if entry.compression_type == Compress::Zstd as u8 {
             std::io::copy(
                 &mut zstd::Decoder::new(data)
                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
