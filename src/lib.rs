@@ -14,6 +14,7 @@ const BNDL_ALIGN: usize = 8;
 const ENTRY_SIZE: usize = std::mem::size_of::<Entry>();
 const FOOTER_SIZE: usize = std::mem::size_of::<Footer>();
 const HEADER_SIZE: usize = 8;
+const AUTO_COMPRESS_THRESHOLD: usize = 2048;
 
 fn pad<
     const SIZE: usize,
@@ -34,9 +35,10 @@ where
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Compress {
-    #[default]
     None,
     Zstd,
+    #[default]
+    Auto,
 }
 
 #[repr(C, packed)]
@@ -175,10 +177,11 @@ impl Bindle {
     }
 
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
-        let (processed, c_type) = if compress == Compress::Zstd {
-            (zstd::encode_all(data, 3)?, 1)
+        let compress = compress == Compress::Zstd || data.len() > AUTO_COMPRESS_THRESHOLD;
+        let (processed, c_type) = if compress {
+            (Cow::Owned(zstd::encode_all(data, 3)?), Compress::Zstd)
         } else {
-            (data.to_vec(), 0)
+            (Cow::Borrowed(data), Compress::None)
         };
 
         self.file.seek(SeekFrom::Start(self.data_end))?;
@@ -197,7 +200,7 @@ impl Bindle {
             offset: offset.to_le_bytes(),
             compressed_size: c_size.to_le_bytes(),
             uncompressed_size: (data.len() as u64).to_le_bytes(),
-            compression_type: c_type,
+            compression_type: c_type as u8,
             name_len: (name.len() as u16).to_le_bytes(),
             ..Default::default()
         };

@@ -15,6 +15,7 @@
 typedef enum BindleCompress {
   BindleCompressNone,
   BindleCompressZstd,
+  BindleCompressAuto,
 } BindleCompress;
 
 typedef struct Bindle Bindle;

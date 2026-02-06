@@ -101,7 +101,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
         Commands::List { bindle_file } => {
             let b = init(bindle_file);
             if b.is_empty() {
-                println!("Archive is empty.");
+                println!("Archive is empty");
                 return Ok(());
             }
 
@@ -134,7 +134,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             let mut b = init(bindle_file);
             let data = std::fs::read(&file_path)?;
 
-            println!("Adding '{}' ({} bytes)...", name, data.len());
+            println!("Adding '{}' ({} bytes)", name, data.len());
 
             b.add(
                 &name,
@@ -147,7 +147,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             )?;
             b.save()?;
 
-            println!("Successfully saved to archive.");
+            println!("OK");
         }
 
         Commands::Cat { name, bindle_file } => {
@@ -171,7 +171,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             compress,
         } => {
             let mut b = init(bindle_file);
-            println!("Packing directory '{:?}'...", src_dir);
+            println!("Packing '{}'", src_dir.display());
             b.pack(
                 src_dir,
                 if compress {
@@ -181,7 +181,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
                 },
             )?;
             b.save()?;
-            println!("Done.");
+            println!("OK");
         }
 
         Commands::Unpack {
@@ -189,16 +189,15 @@ fn handle_command(command: Commands) -> io::Result<()> {
             dest_dir,
         } => {
             let b = init(bindle_file);
-            println!("Unpacking to '{:?}'...", dest_dir);
+            println!("Unpacking to '{}'", dest_dir.display());
             b.unpack(dest_dir)?;
-            println!("Done.");
+            println!("OK");
         }
 
         Commands::Vacuum { bindle_file } => {
             let mut b = init(bindle_file);
-            println!("Vacuuming archive to reclaim space...");
             b.vacuum()?;
-            println!("Vacuum complete.");
+            println!("OK");
         }
     }
     Ok(())
