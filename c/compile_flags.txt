@@ -1,2 +1,2 @@
--I..
+-I../include
 -I/opt/homebrew/include

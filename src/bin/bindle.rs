@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 
-use bindle_file::Bindle;
+use bindle_file::{Bindle, Compress};
 
 #[derive(Parser)]
 #[command(name = "bindle")]
@@ -106,7 +106,15 @@ fn handle_command(command: Commands) -> io::Result<()> {
 
             println!("Adding '{}' ({} bytes)...", name, data.len());
 
-            b.add(&name, &data, compress)?;
+            b.add(
+                &name,
+                &data,
+                if compress {
+                    Compress::Zstd
+                } else {
+                    Compress::None
+                },
+            )?;
             b.save()?;
 
             println!("Successfully saved to archive.");

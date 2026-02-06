@@ -50,8 +50,7 @@ pub unsafe extern "C" fn bindle_add(
         let data_slice = slice::from_raw_parts(data, data_len);
         let b = &mut (*ctx);
 
-        b.add(name_str, data_slice, compress == Compress::Zstd)
-            .is_ok()
+        b.add(name_str, data_slice, compress).is_ok()
     }
 }
 
@@ -232,4 +231,28 @@ pub unsafe extern "C" fn bindle_vacuum(ctx: *mut Bindle) -> bool {
     }
     let b = unsafe { &mut (*ctx) };
     b.vacuum().is_ok()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_unpack(ctx: *mut Bindle, dest_path: *const c_char) -> bool {
+    if ctx.is_null() || dest_path.is_null() {
+        return false;
+    }
+    let b = unsafe { &*ctx };
+    let path = unsafe { CStr::from_ptr(dest_path).to_string_lossy() };
+    b.unpack(path.as_ref()).is_ok()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_pack(
+    ctx: *mut Bindle,
+    src_path: *const c_char,
+    compress: Compress,
+) -> bool {
+    if ctx.is_null() || src_path.is_null() {
+        return false;
+    }
+    let b = unsafe { &mut *ctx };
+    let path = unsafe { CStr::from_ptr(src_path).to_string_lossy() };
+    b.pack(path.as_ref(), compress).is_ok()
 }

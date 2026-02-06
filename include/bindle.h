@@ -78,4 +78,8 @@ const char *bindle_entry_name(const struct Bindle *ctx, size_t index, size_t *le
  */
 bool bindle_vacuum(struct Bindle *ctx);
 
+bool bindle_unpack(struct Bindle *ctx, const char *dest_path);
+
+bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress compress);
+
 #endif  /* BINDLE_H */

@@ -174,8 +174,8 @@ impl Bindle {
         })
     }
 
-    pub fn add(&mut self, name: &str, data: &[u8], compress: bool) -> io::Result<()> {
-        let (processed, c_type) = if compress {
+    pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
+        let (processed, c_type) = if compress == Compress::Zstd {
             (zstd::encode_all(data, 3)?, 1)
         } else {
             (data.to_vec(), 0)
@@ -334,6 +334,48 @@ impl Bindle {
     pub fn index(&self) -> &BTreeMap<String, Entry> {
         &self.index
     }
+
+    /// Recursively packs a directory into the archive.
+    pub fn pack<P: AsRef<Path>>(&mut self, src_dir: P, compress: Compress) -> io::Result<()> {
+        self.pack_recursive(src_dir.as_ref(), src_dir.as_ref(), compress)
+    }
+
+    fn pack_recursive(
+        &mut self,
+        base: &Path,
+        current: &Path,
+        compress: Compress,
+    ) -> io::Result<()> {
+        if current.is_dir() {
+            for entry in std::fs::read_dir(current)? {
+                self.pack_recursive(base, &entry?.path(), compress)?;
+            }
+        } else {
+            let name = current
+                .strip_prefix(base)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                .to_string_lossy();
+            let mut data = Vec::new();
+            File::open(current)?.read_to_end(&mut data)?;
+            self.add(&name, &data, compress)?;
+        }
+        Ok(())
+    }
+
+    /// Unpacks all archive entries to a destination directory.
+    pub fn unpack<P: AsRef<Path>>(&self, dest: P) -> io::Result<()> {
+        let dest_path = dest.as_ref();
+        for (name, _) in &self.index {
+            if let Some(data) = self.read(name) {
+                let file_path = dest_path.join(name);
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(file_path, data)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Bindle {
@@ -355,7 +397,8 @@ mod tests {
         // 1. Create and Write
         {
             let mut fp = Bindle::open(path).expect("Failed to open");
-            fp.add("hello.txt", data, false).expect("Failed to add");
+            fp.add("hello.txt", data, Compress::None)
+                .expect("Failed to add");
             fp.save().expect("Failed to commit");
         }
 
@@ -377,7 +420,8 @@ mod tests {
 
         {
             let mut fp = Bindle::open(path).expect("Failed to open");
-            fp.add("large.bin", &data, true).expect("Failed to add");
+            fp.add("large.bin", &data, Compress::Zstd)
+                .expect("Failed to add");
             fp.save().expect("Failed to commit");
         }
 
@@ -402,7 +446,7 @@ mod tests {
         // 1. Initial creation
         {
             let mut fp = Bindle::open(path).expect("Fail open 1");
-            fp.add("1.txt", b"First", false).unwrap();
+            fp.add("1.txt", b"First", Compress::Zstd).unwrap();
             fp.save().expect("Fail commit 1");
         } // File handle closed here
 
@@ -411,7 +455,7 @@ mod tests {
             let mut fp = Bindle::open(path).expect("Fail open 2");
             // At this point, entries contains "1.txt"
 
-            fp.add("2.txt", b"Second", false).unwrap();
+            fp.add("2.txt", b"Second", Compress::None).unwrap();
             fp.save().expect("Fail commit 2");
 
             // Now test the read
@@ -443,11 +487,12 @@ mod tests {
         let mut b = Bindle::open(path).expect("Failed to open");
 
         // 1. Add initial version
-        b.add("config.txt", b"v1", false).unwrap();
+        b.add("config.txt", b"v1", Compress::None).unwrap();
         b.save().unwrap();
 
         // 2. Overwrite with v2 (shadowing)
-        b.add("config.txt", b"version_2_is_longer", false).unwrap();
+        b.add("config.txt", b"version_2_is_longer", Compress::None)
+            .unwrap();
         b.save().unwrap();
 
         // 3. Verify latest version is retrieved
@@ -470,12 +515,12 @@ mod tests {
 
         // 1. Add a large file
         let large_data = vec![0u8; 1024];
-        b.add("large.bin", &large_data, false).unwrap();
+        b.add("large.bin", &large_data, Compress::None).unwrap();
         b.save().unwrap();
         let size_v1 = fs::metadata(path).unwrap().len();
 
         // 2. Shadow it with a tiny file
-        b.add("large.bin", b"tiny", false).unwrap();
+        b.add("large.bin", b"tiny", Compress::None).unwrap();
         b.save().unwrap();
         let size_v2 = fs::metadata(path).unwrap().len();
 
@@ -494,5 +539,51 @@ mod tests {
         assert_eq!(b2.read("large.bin").unwrap().as_ref(), b"tiny");
 
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_directory_pack_unpack_roundtrip() {
+        let bindle_path = "roundtrip.bindl";
+        let src_dir = "test_src";
+        let out_dir = "test_out";
+
+        // Clean up previous runs
+        let _ = fs::remove_dir_all(src_dir);
+        let _ = fs::remove_dir_all(out_dir);
+        let _ = fs::remove_file(bindle_path);
+
+        // 1. Create a dummy directory structure
+        fs::create_dir_all(format!("{}/subdir", src_dir)).unwrap();
+        fs::write(format!("{}/file1.txt", src_dir), b"Hello World").unwrap();
+        fs::write(
+            format!("{}/subdir/file2.txt", src_dir),
+            b"Compressed Data Content",
+        )
+        .unwrap();
+
+        // 2. Pack the directory using Rust
+        {
+            let mut b = Bindle::open(bindle_path).unwrap();
+            b.pack(src_dir, Compress::Zstd).expect("Pack failed");
+            b.save().expect("Save failed");
+        }
+
+        // 3. Unpack the directory using Rust
+        {
+            let b = Bindle::open(bindle_path).unwrap();
+            b.unpack(out_dir).expect("Unpack failed");
+        }
+
+        // 4. Verify the contents match exactly
+        let content1 = fs::read_to_string(format!("{}/file1.txt", out_dir)).unwrap();
+        let content2 = fs::read_to_string(format!("{}/subdir/file2.txt", out_dir)).unwrap();
+
+        assert_eq!(content1, "Hello World");
+        assert_eq!(content2, "Compressed Data Content");
+
+        // Cleanup
+        fs::remove_dir_all(src_dir).ok();
+        fs::remove_dir_all(out_dir).ok();
+        fs::remove_file(bindle_path).ok();
     }
 }

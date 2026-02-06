@@ -1,9 +1,12 @@
 #include "bindle.h"
 
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <zstd.h>
 
 #define BNDL_MAGIC "BINDL001"
@@ -324,4 +327,47 @@ bool bindle_vacuum(Bindle *b) {
   b->data_end = index_start;
 
   return true;
+}
+
+bool bindle_unpack(Bindle *b, const char *dest_dir) {
+  mkdir(dest_dir, 0755);
+  for (uint64_t i = 0; i < b->count; i++) {
+    size_t len;
+    uint8_t *data = bindle_read(b, b->entries[i].name, &len);
+    if (data) {
+      char path[1024];
+      snprintf(path, sizeof(path), "%s/%s", dest_dir, b->entries[i].name);
+      FILE *f = fopen(path, "wb");
+      if (f) {
+        fwrite(data, 1, len, f);
+        fclose(f);
+      }
+      free(data);
+    }
+  }
+  return true;
+}
+
+bool bindle_pack(Bindle *b, const char *src_dir, BindleCompress compress) {
+  DIR *dir = opendir(src_dir);
+  if (!dir)
+    return false;
+  char path[PATH_MAX];
+  struct dirent *entry;
+  struct stat st;
+  while ((entry = readdir(dir))) {
+    if (entry->d_name[0] == '.')
+      continue;
+    snprintf(path, sizeof(path), "%s/%s", src_dir, entry->d_name);
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+      FILE *f = fopen(path, "rb");
+      uint8_t *buf = malloc(st.st_size);
+      fread(buf, 1, st.st_size, f);
+      fclose(f);
+      bindle_add(b, entry->d_name, buf, st.st_size, compress);
+      free(buf);
+    }
+  }
+  closedir(dir);
+  return bindle_save(b);
 }
