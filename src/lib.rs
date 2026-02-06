@@ -137,6 +137,12 @@ pub struct Writer<'a> {
     pub(crate) uncompressed_size: u64,
 }
 
+impl<'a> Drop for Writer<'a> {
+    fn drop(&mut self) {
+        let _ = self.close_drop();
+    }
+}
+
 impl<'a> std::io::Write for Writer<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write_chunk(buf)?;
@@ -161,8 +167,8 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    pub fn close(self) -> io::Result<()> {
-        let compression_type = if let Some(encoder) = self.encoder {
+    fn close_drop(&mut self) -> io::Result<()> {
+        let compression_type = if let Some(encoder) = self.encoder.take() {
             encoder.finish()?;
             1
         } else {
@@ -189,8 +195,12 @@ impl<'a> Writer<'a> {
             ..Default::default()
         };
 
-        self.bindle.index.insert(self.name, entry);
+        self.bindle.index.insert(self.name.clone(), entry);
         Ok(())
+    }
+
+    pub fn close(mut self) -> io::Result<()> {
+        self.close_drop()
     }
 }
 
