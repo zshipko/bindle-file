@@ -15,7 +15,7 @@ const ENTRY_SIZE: usize = std::mem::size_of::<Entry>();
 const FOOTER_SIZE: usize = std::mem::size_of::<Footer>();
 const HEADER_SIZE: usize = 8;
 const AUTO_COMPRESS_THRESHOLD: usize = 2048;
-const FOOTER_MAGIC: u32 = 0x98989898;
+const FOOTER_MAGIC: u32 = 0x62626262;
 
 fn pad<
     const SIZE: usize,
