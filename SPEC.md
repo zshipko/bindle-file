@@ -1,4 +1,4 @@
-# Bindle File Format (.bdnl)
+# Bindle File Format (.bndl)
 
 Bindle is a simple append-only binary archive format. It features a trailing index to support efficient writes and memory-mapped reads.
 

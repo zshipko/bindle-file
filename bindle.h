@@ -12,17 +12,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/**
- * Opaque handle to a Bindle archive.
- */
-typedef struct BindleContext BindleContext;
+typedef struct Bindle Bindle;
 
-struct BindleContext *bindle_open(const char *path);
+struct Bindle *bindle_open(const char *path);
 
 /**
  * Adds a new entry. Returns true on success.
  */
-bool bindle_add(struct BindleContext *ctx,
+bool bindle_add(struct Bindle *ctx,
                 const char *name,
                 const uint8_t *data,
                 size_t data_len,
@@ -31,27 +28,29 @@ bool bindle_add(struct BindleContext *ctx,
 /**
  * Commits changes to disk.
  */
-bool bindle_save(struct BindleContext *ctx);
+bool bindle_save(struct Bindle *ctx);
 
 /**
  * Frees BindleContext
  */
-void bindle_free(struct BindleContext *ctx);
+void bindle_close(struct Bindle *ctx);
 
-uint8_t *bindle_read(struct BindleContext *ctx, const char *name, size_t *out_len);
+uint8_t *bindle_read(struct Bindle *ctx_ptr, const char *name, size_t *out_len);
 
-const uint8_t *bindle_read_uncompressed_direct(struct BindleContext *ctx,
+void bindle_free_buffer(uint8_t *ptr);
+
+const uint8_t *bindle_read_uncompressed_direct(struct Bindle *ctx,
                                                const char *name,
                                                size_t *out_len);
 
-void bindle_free_buffer(uint8_t *ptr, size_t len);
-
-size_t bindle_length(const struct BindleContext *ctx);
+size_t bindle_length(const struct Bindle *ctx);
 
 /**
  * Returns the name of the entry at the given index.
  * The string is owned by the Bindle; the caller must NOT free it.
  */
-const char *bindle_entry_name(const struct BindleContext *ctx, size_t index, size_t *len);
+const char *bindle_entry_name(const struct Bindle *ctx, size_t index, size_t *len);
+
+bool bindle_vacuum(struct Bindle *ctx);
 
 #endif  /* BINDLE_H */

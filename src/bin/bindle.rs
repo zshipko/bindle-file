@@ -81,7 +81,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             );
             println!("{}", "-".repeat(60));
 
-            for (entry, name) in b.entries() {
+            for (name, entry) in b.index().iter() {
                 let size = u64::from_le_bytes(entry.uncompressed_size);
                 let packed = u64::from_le_bytes(entry.compressed_size);
 

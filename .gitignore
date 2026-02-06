@@ -1,1 +1,6 @@
 /target
+Cargo.lock
+*.bndl
+c/bindle_c
+c/test
+c/input.txt
