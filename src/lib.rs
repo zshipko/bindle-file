@@ -437,6 +437,31 @@ impl Bindle {
         }
     }
 
+    pub fn read_to<W: std::io::Write>(&self, name: &str, mut w: W) -> std::io::Result<()> {
+        let entry = self
+            .index
+            .get(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid entry"))?;
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing mmap"))?;
+        let data = mmap
+            .get(entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid mmap offset"))?;
+
+        if entry.compression_type == 1 {
+            std::io::copy(
+                &mut zstd::Decoder::new(data)
+                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+                &mut w,
+            )?;
+        } else {
+            w.write_all(&data)?;
+        }
+        Ok(())
+    }
+
     /// The number of entries
     pub fn len(&self) -> usize {
         self.index.len()
