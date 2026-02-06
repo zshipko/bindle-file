@@ -1,6 +1,7 @@
 #include "bindle.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -329,45 +330,109 @@ bool bindle_vacuum(Bindle *b) {
   return true;
 }
 
+/* --- Helper: Recursive directory creation (mkdir -p) --- */
+static void ensure_dir_exists(const char *path) {
+  char tmp[1024];
+  char *p = NULL;
+  size_t len;
+
+  snprintf(tmp, sizeof(tmp), "%s", path);
+  len = strlen(tmp);
+  if (tmp[len - 1] == '/')
+    tmp[len - 1] = 0;
+
+  for (p = tmp + 1; *p; p++) {
+    if (*p == '/') {
+      *p = 0;
+      mkdir(tmp, 0755);
+      *p = '/';
+    }
+  }
+}
+
+/* --- Recursive Pack Implementation --- */
+static bool pack_recursive(Bindle *b, const char *base_path,
+                           const char *current_path, bool compress) {
+  DIR *dir = opendir(current_path);
+  if (!dir)
+    return false;
+
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue;
+
+    char full_path[PATH_MAX];
+    snprintf(full_path, sizeof(full_path), "%s/%s", current_path,
+             entry->d_name);
+
+    struct stat st;
+    if (stat(full_path, &st) == -1)
+      continue;
+
+    if (S_ISDIR(st.st_mode)) {
+      // Recurse into subdirectory
+      pack_recursive(b, base_path, full_path, compress);
+    } else if (S_ISREG(st.st_mode)) {
+      // Calculate relative name (e.g., "subdir/file.txt")
+      // We skip the base_path length + 1 (for the slash)
+      const char *relative_name = full_path + strlen(base_path);
+      if (*relative_name == '/')
+        relative_name++;
+
+      FILE *f = fopen(full_path, "rb");
+      if (!f)
+        continue;
+
+      uint8_t *buffer = malloc(st.st_size);
+      if (fread(buffer, 1, st.st_size, f) == (size_t)st.st_size) {
+        bindle_add(b, relative_name, buffer, st.st_size,
+                   compress ? BindleCompressZstd : BindleCompressNone);
+      }
+      fclose(f);
+      free(buffer);
+    }
+  }
+  closedir(dir);
+  return true;
+}
+
+bool bindle_pack(Bindle *b, const char *src_dir, BindleCompress compress) {
+  if (!b || !src_dir)
+    return false;
+  bool success = pack_recursive(b, src_dir, src_dir, compress);
+  if (success) {
+    return bindle_save(b);
+  }
+  return false;
+}
+
+/* --- Updated Unpack Implementation --- */
 bool bindle_unpack(Bindle *b, const char *dest_dir) {
+  if (!b || !dest_dir)
+    return false;
+
   mkdir(dest_dir, 0755);
+
   for (uint64_t i = 0; i < b->count; i++) {
-    size_t len;
-    uint8_t *data = bindle_read(b, b->entries[i].name, &len);
+    size_t out_len = 0;
+    uint8_t *data = bindle_read(b, b->entries[i].name, &out_len);
+
     if (data) {
-      char path[1024];
-      snprintf(path, sizeof(path), "%s/%s", dest_dir, b->entries[i].name);
-      FILE *f = fopen(path, "wb");
-      if (f) {
-        fwrite(data, 1, len, f);
-        fclose(f);
+      char full_path[PATH_MAX];
+      snprintf(full_path, sizeof(full_path), "%s/%s", dest_dir,
+               b->entries[i].name);
+
+      // Recreate directory structure before writing file
+      ensure_dir_exists(full_path);
+
+      FILE *out = fopen(full_path, "wb");
+      if (out) {
+        fwrite(data, 1, out_len, out);
+        fclose(out);
       }
       free(data);
     }
   }
   return true;
-}
-
-bool bindle_pack(Bindle *b, const char *src_dir, BindleCompress compress) {
-  DIR *dir = opendir(src_dir);
-  if (!dir)
-    return false;
-  char path[PATH_MAX];
-  struct dirent *entry;
-  struct stat st;
-  while ((entry = readdir(dir))) {
-    if (entry->d_name[0] == '.')
-      continue;
-    snprintf(path, sizeof(path), "%s/%s", src_dir, entry->d_name);
-    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-      FILE *f = fopen(path, "rb");
-      uint8_t *buf = malloc(st.st_size);
-      fread(buf, 1, st.st_size, f);
-      fclose(f);
-      bindle_add(b, entry->d_name, buf, st.st_size, compress);
-      free(buf);
-    }
-  }
-  closedir(dir);
-  return bindle_save(b);
 }

@@ -47,6 +47,36 @@ enum Commands {
         /// Name of the entry to extract
         name: String,
     },
+
+    /// Pack an entire directory into the archive
+    Pack {
+        /// Bindle archive file
+        #[arg(value_name = "BINDLE_FILE")]
+        bindle_file: PathBuf,
+        /// Local directory to pack
+        #[arg(value_name = "SRC_DIR")]
+        src_dir: PathBuf,
+        /// Use zstd compression
+        #[arg(short, long)]
+        compress: bool,
+    },
+
+    /// Unpack the archive to a local directory
+    Unpack {
+        /// Bindle archive file
+        #[arg(value_name = "BINDLE_FILE")]
+        bindle_file: PathBuf,
+        /// Destination directory
+        #[arg(value_name = "DEST_DIR")]
+        dest_dir: PathBuf,
+    },
+
+    /// Reclaim space by removing shadowed/deleted data
+    Vacuum {
+        /// Bindle archive file
+        #[arg(value_name = "BINDLE_FILE")]
+        bindle_file: PathBuf,
+    },
 }
 
 fn main() {
@@ -76,14 +106,14 @@ fn handle_command(command: Commands) -> io::Result<()> {
             }
 
             println!(
-                "{:<20} {:<12} {:<12} {:<10}",
+                "{:<30} {:<12} {:<12} {:<10}",
                 "NAME", "SIZE", "PACKED", "RATIO"
             );
-            println!("{}", "-".repeat(60));
+            println!("{}", "-".repeat(70));
 
             for (name, entry) in b.index().iter() {
-                let size = u64::from_le_bytes(entry.uncompressed_size);
-                let packed = u64::from_le_bytes(entry.compressed_size);
+                let size = entry.uncompressed_size();
+                let packed = entry.compressed_size();
 
                 let ratio = if size > 0 {
                     (packed as f64 / size as f64) * 100.0
@@ -91,7 +121,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
                     100.0
                 };
 
-                println!("{:<20} {:<12} {:<12} {:.1}%", name, size, packed, ratio);
+                println!("{:<30} {:<12} {:<12} {:.1}%", name, size, packed, ratio);
             }
         }
 
@@ -124,7 +154,6 @@ fn handle_command(command: Commands) -> io::Result<()> {
             let b = init(bindle_file);
             match b.read(&name) {
                 Some(data) => {
-                    // Write raw bytes to stdout (useful for piping to other tools or files)
                     io::stdout().write_all(&data)?;
                 }
                 None => {
@@ -134,6 +163,42 @@ fn handle_command(command: Commands) -> io::Result<()> {
                     ));
                 }
             }
+        }
+
+        Commands::Pack {
+            bindle_file,
+            src_dir,
+            compress,
+        } => {
+            let mut b = init(bindle_file);
+            println!("Packing directory '{:?}'...", src_dir);
+            b.pack(
+                src_dir,
+                if compress {
+                    Compress::Zstd
+                } else {
+                    Compress::None
+                },
+            )?;
+            b.save()?;
+            println!("Done.");
+        }
+
+        Commands::Unpack {
+            bindle_file,
+            dest_dir,
+        } => {
+            let b = init(bindle_file);
+            println!("Unpacking to '{:?}'...", dest_dir);
+            b.unpack(dest_dir)?;
+            println!("Done.");
+        }
+
+        Commands::Vacuum { bindle_file } => {
+            let mut b = init(bindle_file);
+            println!("Vacuuming archive to reclaim space...");
+            b.vacuum()?;
+            println!("Vacuum complete.");
         }
     }
     Ok(())
