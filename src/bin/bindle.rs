@@ -59,6 +59,9 @@ enum Commands {
         /// Use zstd compression
         #[arg(short, long)]
         compress: bool,
+        /// Append to existing file
+        #[arg(short, long)]
+        append: bool,
     },
 
     /// Unpack the archive to a local directory
@@ -83,33 +86,31 @@ fn main() {
     let cli = Cli::parse();
 
     if let Err(e) = handle_command(cli.command) {
-        eprintln!("Operation failed: {}", e);
+        eprintln!("ERROR {}", e);
         process::exit(1);
     }
 }
 
 fn handle_command(command: Commands) -> io::Result<()> {
-    let init = |path| match Bindle::open(path) {
+    let init = |path: PathBuf| match Bindle::open(&path) {
         Ok(bindle) => bindle,
         Err(e) => {
-            eprintln!("Error: unable to open '{}'", e);
+            eprintln!("ERROR unable to open {}: {}", path.display(), e);
             process::exit(1);
         }
     };
 
     match command {
         Commands::List { bindle_file } => {
-            let b = init(bindle_file);
-            if b.is_empty() {
-                println!("Archive is empty");
-                return Ok(());
-            }
-
             println!(
                 "{:<30} {:<12} {:<12} {:<10}",
                 "NAME", "SIZE", "PACKED", "RATIO"
             );
             println!("{}", "-".repeat(70));
+            if !bindle_file.exists() {
+                return Ok(());
+            }
+            let b = init(bindle_file);
 
             for (name, entry) in b.index().iter() {
                 let size = entry.uncompressed_size();
@@ -131,10 +132,8 @@ fn handle_command(command: Commands) -> io::Result<()> {
             compress,
             bindle_file,
         } => {
-            let mut b = init(bindle_file);
+            let mut b = init(bindle_file.clone());
             let data = std::fs::read(&file_path)?;
-
-            println!("Adding '{}' ({} bytes)", name, data.len());
 
             b.add(
                 &name,
@@ -145,13 +144,19 @@ fn handle_command(command: Commands) -> io::Result<()> {
                     Compress::None
                 },
             )?;
+            println!(
+                "ADD '{}' -> {} ({} bytes)",
+                name,
+                bindle_file.display(),
+                data.len()
+            );
             b.save()?;
 
             println!("OK");
         }
 
         Commands::Cat { name, bindle_file } => {
-            let b = init(bindle_file);
+            let b = init(bindle_file.clone());
             match b.read(&name) {
                 Some(data) => {
                     io::stdout().write_all(&data)?;
@@ -159,7 +164,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("Entry '{}' not found in archive", name),
+                        format!("ERROR '{}' not found in {}", name, bindle_file.display()),
                     ));
                 }
             }
@@ -169,9 +174,13 @@ fn handle_command(command: Commands) -> io::Result<()> {
             bindle_file,
             src_dir,
             compress,
+            append,
         } => {
+            println!("PACK {} -> {}", src_dir.display(), bindle_file.display());
             let mut b = init(bindle_file);
-            println!("Packing '{}'", src_dir.display());
+            if !append {
+                b.clear();
+            }
             b.pack(
                 src_dir,
                 if compress {
@@ -188,13 +197,14 @@ fn handle_command(command: Commands) -> io::Result<()> {
             bindle_file,
             dest_dir,
         } => {
+            println!("UNPACK {} -> {}", bindle_file.display(), dest_dir.display());
             let b = init(bindle_file);
-            println!("Unpacking to '{}'", dest_dir.display());
             b.unpack(dest_dir)?;
             println!("OK");
         }
 
         Commands::Vacuum { bindle_file } => {
+            println!("VACUUM {}", bindle_file.display());
             let mut b = init(bindle_file);
             b.vacuum()?;
             println!("OK");
