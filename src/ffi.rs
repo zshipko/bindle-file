@@ -1,10 +1,11 @@
 use std::alloc::{Layout, dealloc};
 use std::ffi::CStr;
+use std::io::Write;
 use std::mem;
 use std::os::raw::c_char;
 use std::slice;
 
-use crate::{Bindle, Compress};
+use crate::{Bindle, Compress, Stream};
 
 /// Open a bindle file from disk, the path paramter should be NUL terminated
 #[unsafe(no_mangle)]
@@ -51,6 +52,36 @@ pub unsafe extern "C" fn bindle_add(
         let b = &mut (*ctx);
 
         b.add(name_str, data_slice, compress).is_ok()
+    }
+}
+
+/// Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
+/// is provided
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_add_file(
+    ctx: *mut Bindle,
+    name: *const c_char,
+    path: *const c_char,
+    compress: Compress,
+) -> bool {
+    if ctx.is_null() || name.is_null() || path.is_null() {
+        return false;
+    }
+
+    unsafe {
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let b = &mut (*ctx);
+
+        b.add_file(name_str, path_str, compress).is_ok()
     }
 }
 
@@ -255,4 +286,58 @@ pub unsafe extern "C" fn bindle_pack(
     let b = unsafe { &mut *ctx };
     let path = unsafe { CStr::from_ptr(src_path).to_string_lossy() };
     b.pack(path.as_ref(), compress).is_ok()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_exists(ctx: *const Bindle, name: *const c_char) -> bool {
+    if ctx.is_null() || name.is_null() {
+        return false;
+    }
+
+    let b = unsafe { &*ctx };
+    let name_str = unsafe {
+        match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+
+    b.exists(name_str)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_stream_new<'a>(
+    ctx: *mut Bindle,
+    name: *const c_char,
+    compress: Compress,
+) -> *mut Stream<'a> {
+    unsafe {
+        let b = &mut *ctx;
+        let name_str = CStr::from_ptr(name).to_string_lossy();
+
+        match b.stream(&name_str, compress) {
+            Ok(stream) => Box::into_raw(Box::new(std::mem::transmute(stream))),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_stream_write(
+    stream: *mut Stream,
+    data: *const u8,
+    len: usize,
+) -> bool {
+    unsafe {
+        let s = &mut *stream;
+        let chunk = std::slice::from_raw_parts(data, len);
+        s.write_all(chunk).is_ok()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_stream_finish(stream: *mut Stream) -> bool {
+    // Reclaim memory from the Box and call finish()
+    let s = unsafe { Box::from_raw(stream) };
+    s.finish().is_ok()
 }

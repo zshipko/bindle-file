@@ -95,6 +95,76 @@ pub struct Bindle {
     data_end: u64,
 }
 
+pub enum Either<A, B> {
+    Left(A),
+    Right(B),
+}
+
+pub struct Stream<'a> {
+    pub(crate) bindle: &'a mut Bindle,
+    pub(crate) encoder: Option<zstd::Encoder<'a, std::fs::File>>,
+    pub(crate) name: String,
+    pub(crate) start_offset: u64,
+    pub(crate) uncompressed_size: u64,
+}
+
+impl<'a> std::io::Write for Stream<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_chunk(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> Stream<'a> {
+    pub fn write_chunk(&mut self, data: &[u8]) -> io::Result<()> {
+        self.uncompressed_size += data.len() as u64;
+
+        if let Some(encoder) = &mut self.encoder {
+            encoder.write_all(data)?;
+        } else {
+            self.bindle.file.write_all(data)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn finish(self) -> io::Result<()> {
+        let compression_type = if let Some(encoder) = self.encoder {
+            encoder.finish()?;
+            1
+        } else {
+            0
+        };
+
+        let current_pos = self.bindle.file.stream_position()?;
+        let compressed_size = current_pos - self.start_offset;
+
+        // Handle 8-byte alignment padding
+        let pad_len = pad::<8, u64>(current_pos);
+        if pad_len > 0 {
+            self.bindle.file.write_all(&vec![0u8; pad_len as usize])?;
+        }
+
+        self.bindle.data_end = current_pos + pad_len;
+
+        let entry = Entry {
+            offset: self.start_offset.to_le_bytes(),
+            compressed_size: compressed_size.to_le_bytes(),
+            uncompressed_size: self.uncompressed_size.to_le_bytes(),
+            compression_type,
+            name_len: (self.name.len() as u16).to_le_bytes(),
+            ..Default::default()
+        };
+
+        self.bindle.index.insert(self.name, entry);
+        Ok(())
+    }
+}
+
 impl Bindle {
     /// Create a new bindle file, this will overwrite the existing file
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
@@ -131,6 +201,8 @@ impl Bindle {
         let mut file = opts.open(&path)?;
         file.lock_shared()?;
         let len = file.metadata()?.len();
+
+        // Handle completely new/empty files
         if len == 0 {
             file.write_all(BNDL_MAGIC)?;
             return Ok(Self {
@@ -142,6 +214,15 @@ impl Bindle {
             });
         }
 
+        // Safety check: File must be at least HEADER + FOOTER size (24 bytes)
+        // This prevents "attempt to subtract with overflow" when calculating footer_pos
+        if len < (HEADER_SIZE + FOOTER_SIZE) as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File too small to be a valid bindle",
+            ));
+        }
+
         let mut header = [0u8; 8];
         file.read_exact(&mut header)?;
         if &header != BNDL_MAGIC {
@@ -149,6 +230,8 @@ impl Bindle {
         }
 
         let m = unsafe { Mmap::map(&file)? };
+
+        // Calculate footer position. Subtraction is now safe due to the check above.
         let footer_pos = m.len() - FOOTER_SIZE;
         let footer = Footer::read_from_bytes(&m[footer_pos..]).unwrap();
 
@@ -158,11 +241,23 @@ impl Bindle {
 
         let mut cursor = data_end as usize;
         for _ in 0..count {
+            // Ensure there is enough data left for an Entry header
+            if cursor + ENTRY_SIZE > footer_pos {
+                break;
+            }
+
             let entry = Entry::read_from_bytes(&m[cursor..cursor + ENTRY_SIZE]).unwrap();
             let n_start = cursor + ENTRY_SIZE;
+
+            // Validate that the filename exists within the mapped bounds
+            if n_start + entry.name_len() > footer_pos {
+                break;
+            }
+
             let name =
                 String::from_utf8_lossy(&m[n_start..n_start + entry.name_len()]).into_owned();
             index.insert(name, entry);
+
             let total = ENTRY_SIZE + entry.name_len();
             cursor += (total + (BNDL_ALIGN - 1)) & !(BNDL_ALIGN - 1);
         }
@@ -176,8 +271,12 @@ impl Bindle {
         })
     }
 
+    fn should_auto_compress(&self, compress: Compress, len: usize) -> bool {
+        compress == Compress::Zstd || (compress == Compress::Auto && len > AUTO_COMPRESS_THRESHOLD)
+    }
+
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
-        let compress = compress == Compress::Zstd || data.len() > AUTO_COMPRESS_THRESHOLD;
+        let compress = self.should_auto_compress(compress, data.len());
         let (processed, c_type) = if compress {
             (Cow::Owned(zstd::encode_all(data, 3)?), Compress::Zstd)
         } else {
@@ -206,6 +305,18 @@ impl Bindle {
         };
 
         self.index.insert(name.to_string(), entry);
+        Ok(())
+    }
+
+    pub fn add_file(
+        &mut self,
+        name: &str,
+        path: impl AsRef<Path>,
+        compress: Compress,
+    ) -> io::Result<()> {
+        let mut stream = self.stream(name, compress)?;
+        let mut src = std::fs::File::open(path)?;
+        std::io::copy(&mut src, &mut stream)?;
         Ok(())
     }
 
@@ -326,16 +437,29 @@ impl Bindle {
         }
     }
 
+    /// The number of entries
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
+    /// Returns true if there are no entries
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }
 
+    /// Direct readonly access to the index
     pub fn index(&self) -> &BTreeMap<String, Entry> {
         &self.index
+    }
+
+    /// Clear all entries
+    pub fn clear(&mut self) {
+        self.index.clear()
+    }
+
+    /// Checks if an entry exists in the archive index.
+    pub fn exists(&self, name: &str) -> bool {
+        self.index.contains_key(name)
     }
 
     /// Recursively packs a directory into the archive.
@@ -368,6 +492,9 @@ impl Bindle {
     /// Unpacks all archive entries to a destination directory.
     pub fn unpack<P: AsRef<Path>>(&self, dest: P) -> io::Result<()> {
         let dest_path = dest.as_ref();
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         for (name, _) in &self.index {
             if let Some(data) = self.read(name) {
                 let file_path = dest_path.join(name);
@@ -378,6 +505,24 @@ impl Bindle {
             }
         }
         Ok(())
+    }
+
+    pub fn stream<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Stream<'a>> {
+        self.file.seek(SeekFrom::Start(self.data_end))?;
+        let compress = self.should_auto_compress(compress, 0);
+        let f = self.file.try_clone()?;
+        let start_offset = self.data_end;
+        Ok(Stream {
+            name: name.to_string(),
+            bindle: self,
+            encoder: if compress {
+                Some(zstd::Encoder::new(f, 3)?)
+            } else {
+                None
+            },
+            start_offset,
+            uncompressed_size: 0,
+        })
     }
 }
 
@@ -588,5 +733,39 @@ mod tests {
         fs::remove_dir_all(src_dir).ok();
         fs::remove_dir_all(out_dir).ok();
         fs::remove_file(bindle_path).ok();
+    }
+
+    #[test]
+    fn test_streaming_manual_chunks() {
+        let path = "test_stream.bindl";
+        let _ = std::fs::remove_file(path);
+        let chunk1 = b"Hello ";
+        let chunk2 = b"Streaming ";
+        let chunk3 = b"World!";
+        let expected = b"Hello Streaming World!";
+
+        {
+            let mut b = Bindle::open(path).expect("Failed to open");
+            // Start a stream without compression
+            let mut s = b
+                .stream("streamed_file.txt", Compress::None)
+                .expect("Failed to start stream");
+
+            // Write chunks manually
+            s.write_chunk(chunk1).unwrap();
+            s.write_chunk(chunk2).unwrap();
+            s.write_chunk(chunk3).unwrap();
+
+            s.finish().expect("Failed to finish stream");
+            b.save().expect("Failed to save");
+        }
+
+        // Verification
+        let b = Bindle::open(path).expect("Failed to reopen");
+        let result = b.read("streamed_file.txt").expect("Entry not found");
+        assert_eq!(result.as_ref(), expected);
+        assert_eq!(result.len(), expected.len());
+
+        let _ = std::fs::remove_file(path);
     }
 }

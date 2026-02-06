@@ -20,6 +20,8 @@ typedef enum BindleCompress {
 
 typedef struct Bindle Bindle;
 
+typedef struct BindleStream BindleStream;
+
 /**
  * Open a bindle file from disk, the path paramter should be NUL terminated
  */
@@ -34,6 +36,15 @@ bool bindle_add(struct Bindle *ctx,
                 const uint8_t *data,
                 size_t data_len,
                 enum BindleCompress compress);
+
+/**
+ * Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
+ * is provided
+ */
+bool bindle_add_file(struct Bindle *ctx,
+                     const char *name,
+                     const char *path,
+                     enum BindleCompress compress);
 
 /**
  * Save any changed to disk
@@ -82,5 +93,15 @@ bool bindle_vacuum(struct Bindle *ctx);
 bool bindle_unpack(struct Bindle *ctx, const char *dest_path);
 
 bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress compress);
+
+bool bindle_exists(const struct Bindle *ctx, const char *name);
+
+struct BindleStream *bindle_stream_new(struct Bindle *ctx,
+                                       const char *name,
+                                       enum BindleCompress compress);
+
+bool bindle_stream_write(struct BindleStream *stream, const uint8_t *data, size_t len);
+
+bool bindle_stream_finish(struct BindleStream *stream);
 
 #endif  /* BINDLE_H */
