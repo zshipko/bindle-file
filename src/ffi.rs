@@ -338,10 +338,9 @@ pub unsafe extern "C" fn bindle_writer_write(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_writer_finish(stream: *mut Writer) -> bool {
-    // Reclaim memory from the Box and call finish()
+pub unsafe extern "C" fn bindle_writer_close(stream: *mut Writer) -> bool {
     let s = unsafe { Box::from_raw(stream) };
-    s.finish().is_ok()
+    s.close().is_ok()
 }
 
 #[unsafe(no_mangle)]
@@ -382,7 +381,7 @@ pub unsafe extern "C" fn bindle_reader_read(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_reader_free(reader: *mut Reader) {
+pub unsafe extern "C" fn bindle_reader_close(reader: *mut Reader) {
     if !reader.is_null() {
         unsafe {
             drop(Box::from_raw(reader));

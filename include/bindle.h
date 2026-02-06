@@ -108,12 +108,12 @@ struct BindleWriter *bindle_writer_new(struct Bindle *ctx,
 
 bool bindle_writer_write(struct BindleWriter *stream, const uint8_t *data, size_t len);
 
-bool bindle_writer_finish(struct BindleWriter *stream);
+bool bindle_writer_close(struct BindleWriter *stream);
 
 struct BindleReader *bindle_reader_new(const struct Bindle *ctx, const char *name);
 
 ptrdiff_t bindle_reader_read(struct BindleReader *reader, uint8_t *buffer, size_t buffer_len);
 
-void bindle_reader_free(struct BindleReader *reader);
+void bindle_reader_close(struct BindleReader *reader);
 
 #endif  /* BINDLE_H */

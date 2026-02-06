@@ -15,6 +15,7 @@ const ENTRY_SIZE: usize = std::mem::size_of::<Entry>();
 const FOOTER_SIZE: usize = std::mem::size_of::<Footer>();
 const HEADER_SIZE: usize = 8;
 const AUTO_COMPRESS_THRESHOLD: usize = 2048;
+const FOOTER_MAGIC: u32 = 0x98989898;
 
 fn pad<
     const SIZE: usize,
@@ -84,7 +85,8 @@ impl Entry {
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Debug)]
 struct Footer {
     pub index_offset: u64,
-    pub entry_count: u64,
+    pub entry_count: u32,
+    pub magic: u32,
 }
 
 pub struct Bindle {
@@ -159,7 +161,7 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    pub fn finish(self) -> io::Result<()> {
+    pub fn close(self) -> io::Result<()> {
         let compression_type = if let Some(encoder) = self.encoder {
             encoder.finish()?;
             1
@@ -262,6 +264,13 @@ impl Bindle {
         let footer_pos = m.len() - FOOTER_SIZE;
         let footer = Footer::read_from_bytes(&m[footer_pos..]).unwrap();
 
+        if footer.magic != FOOTER_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid footer, the file may be corrupt",
+            ));
+        }
+
         let data_end = footer.index_offset;
         let count = footer.entry_count;
         let mut index = BTreeMap::new();
@@ -305,7 +314,7 @@ impl Bindle {
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
         let mut stream = self.writer(name, compress)?;
         stream.write_all(data)?;
-        stream.finish()?;
+        stream.close()?;
         Ok(())
     }
 
@@ -337,7 +346,8 @@ impl Bindle {
 
         let footer = Footer {
             index_offset: index_start,
-            entry_count: self.index.len() as u64,
+            entry_count: self.index.len() as u32,
+            magic: FOOTER_MAGIC,
         };
         self.file.write_all(footer.as_bytes())?;
         self.file.flush()?;
@@ -390,7 +400,8 @@ impl Bindle {
 
             let footer = Footer {
                 index_offset: index_start,
-                entry_count: self.index.len() as u64,
+                entry_count: self.index.len() as u32,
+                magic: FOOTER_MAGIC,
             };
             new_file.write_all(footer.as_bytes())?;
             new_file.sync_all()?;
@@ -793,7 +804,7 @@ mod tests {
             s.write_chunk(chunk2).unwrap();
             s.write_chunk(chunk3).unwrap();
 
-            s.finish().expect("Failed to finish stream");
+            s.close().expect("Failed to finish stream");
             b.save().expect("Failed to save");
         }
 

@@ -51,7 +51,8 @@ The last 16 bytes of the file are used to locate the index. Both fields are stor
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `index_offset` | 8 bytes | u64 | Absolute offset to the start of the index |
-| `entry_count` | 8 bytes | u64 | Total number of unique entries in the index |
+| `entry_count` | 4 bytes | u32 | Total number of unique entries in the index |
+| `magic`       | 4 bytes | u32 | Magic sentinel number
 
 ---
 
