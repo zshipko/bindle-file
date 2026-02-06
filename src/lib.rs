@@ -13,7 +13,23 @@ const BNDL_MAGIC: &[u8; 8] = b"BINDL001";
 const BNDL_ALIGN: usize = 8;
 const ENTRY_SIZE: usize = std::mem::size_of::<Entry>();
 const FOOTER_SIZE: usize = std::mem::size_of::<Footer>();
-const HEADER_SIZE: u64 = 8;
+const HEADER_SIZE: usize = 8;
+
+fn pad<
+    const SIZE: usize,
+    T: Copy + TryFrom<usize> + std::ops::Sub<T, Output = T> + std::ops::Rem<T, Output = T>,
+>(
+    n: T,
+) -> T
+where
+    <T as std::ops::Sub>::Output: std::ops::Rem<T>,
+{
+    if let Ok(size) = T::try_from(SIZE) {
+        return (size - (n % size)) % size;
+    }
+
+    unreachable!()
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,11 +42,11 @@ pub enum Compress {
 #[repr(C, packed)]
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Clone, Copy, Debug, Default)]
 pub struct Entry {
-    pub offset: [u8; 8], // Use [u8; 8] for disk stability
-    pub compressed_size: [u8; 8],
-    pub uncompressed_size: [u8; 8],
-    pub crc32: [u8; 4],
-    pub name_len: [u8; 2],
+    pub offset: [u8; std::mem::size_of::<u64>()], // Use [u8; 8] for disk stability
+    pub compressed_size: [u8; std::mem::size_of::<u64>()],
+    pub uncompressed_size: [u8; std::mem::size_of::<u64>()],
+    pub crc32: [u8; std::mem::size_of::<u32>()],
+    pub name_len: [u8; std::mem::size_of::<u16>()],
     pub compression_type: u8,
     pub _reserved: u8,
 }
@@ -120,7 +136,7 @@ impl Bindle {
                 file,
                 mmap: None,
                 index: BTreeMap::new(),
-                data_end: HEADER_SIZE,
+                data_end: HEADER_SIZE as u64,
             });
         }
 
@@ -170,7 +186,7 @@ impl Bindle {
 
         let offset = self.data_end;
         let c_size = processed.len() as u64;
-        let pad = (8 - (c_size % 8)) % 8;
+        let pad = pad::<8, u64>(c_size);
         if pad > 0 {
             self.file.write_all(&vec![0u8; pad as usize])?;
         }
@@ -198,7 +214,7 @@ impl Bindle {
         for (name, entry) in &self.index {
             self.file.write_all(entry.as_bytes())?;
             self.file.write_all(name.as_bytes())?;
-            let pad = (BNDL_ALIGN - ((ENTRY_SIZE + name.len()) % BNDL_ALIGN)) % BNDL_ALIGN;
+            let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len()); // (BNDL_ALIGN - ((ENTRY_SIZE + name.len()) % BNDL_ALIGN)) % BNDL_ALIGN;
             if pad > 0 {
                 self.file.write_all(&vec![0u8; pad])?;
             }
@@ -227,7 +243,7 @@ impl Bindle {
                 .open(&tmp_path)?;
 
             new_file.write_all(BNDL_MAGIC)?;
-            let mut current_offset = HEADER_SIZE;
+            let mut current_offset = HEADER_SIZE as u64;
 
             // Copy only live entries to the new file
             for entry in self.index.values_mut() {
@@ -235,11 +251,11 @@ impl Bindle {
                 self.file.seek(SeekFrom::Start(entry.offset()))?;
                 self.file.read_exact(&mut buf)?;
 
-                new_file.seek(SeekFrom::Start(current_offset))?;
+                new_file.seek(SeekFrom::Start(current_offset as u64))?;
                 new_file.write_all(&buf)?;
 
                 entry.offset = current_offset.to_le_bytes();
-                let pad = (8 - (entry.compressed_size() % 8)) % 8;
+                let pad = pad::<8, u64>(entry.compressed_size());
                 if pad > 0 {
                     new_file.write_all(&vec![0u8; pad as usize])?;
                 }
@@ -251,7 +267,7 @@ impl Bindle {
             for (name, entry) in &self.index {
                 new_file.write_all(entry.as_bytes())?;
                 new_file.write_all(name.as_bytes())?;
-                let pad = (BNDL_ALIGN - ((ENTRY_SIZE + name.len()) % BNDL_ALIGN)) % BNDL_ALIGN;
+                let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
                 if pad > 0 {
                     new_file.write_all(&vec![0u8; pad])?;
                 }

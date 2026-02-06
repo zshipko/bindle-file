@@ -7,10 +7,13 @@ fn main() {
     // Instead of using .generate(), use the Builder for more control
     let config = cbindgen::Config::from_file("cbindgen.toml").unwrap_or_default();
 
-    cbindgen::Builder::new()
+    if let Ok(b) = cbindgen::Builder::new()
         .with_crate(&crate_dir)
         .with_config(config)
         .generate()
-        .expect("Unable to generate bindings")
-        .write_to_file(PathBuf::from(crate_dir).join("include/bindle.h"));
+    {
+        b.write_to_file(PathBuf::from(crate_dir).join("include/bindle.h"));
+    } else {
+        eprintln!("WARNING: bindle.h not updated");
+    }
 }
