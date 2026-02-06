@@ -78,20 +78,45 @@ pub struct Bindle {
 }
 
 impl Bindle {
-    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    /// Create a new bindle file, this will overwrite the existing file
+    pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
-        let mut file = OpenOptions::new()
+        let opts = OpenOptions::new()
+            .truncate(true)
             .read(true)
             .write(true)
             .create(true)
-            .open(&path_buf)?;
-        file.lock_shared()?;
+            .to_owned();
+        Self::new(path_buf, opts)
+    }
 
+    /// Open or create a bindle file
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path_buf = path.as_ref().to_path_buf();
+        let opts = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .to_owned();
+        Self::new(path_buf, opts)
+    }
+
+    /// Open a bindle file, this will not create it if it doesn't exist
+    pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path_buf = path.as_ref().to_path_buf();
+        let opts = OpenOptions::new().read(true).write(true).to_owned();
+        Self::new(path_buf, opts)
+    }
+
+    /// Create a new `Bindle` from a path and file, the path must match the file
+    pub fn new(path: PathBuf, opts: OpenOptions) -> io::Result<Self> {
+        let mut file = opts.open(&path)?;
+        file.lock_shared()?;
         let len = file.metadata()?.len();
         if len == 0 {
             file.write_all(BNDL_MAGIC)?;
             return Ok(Self {
-                path: path_buf,
+                path,
                 file,
                 mmap: None,
                 index: BTreeMap::new(),
@@ -125,7 +150,7 @@ impl Bindle {
         }
 
         Ok(Self {
-            path: path_buf,
+            path,
             file,
             mmap: Some(m),
             index,
@@ -193,7 +218,7 @@ impl Bindle {
     pub fn vacuum(&mut self) -> io::Result<()> {
         let tmp_path = self.path.with_extension("tmp");
 
-        // 1. Create and populate the temporary file
+        // Create and populate the temporary file
         {
             let mut new_file = OpenOptions::new()
                 .write(true)
@@ -241,7 +266,7 @@ impl Bindle {
             // new_file is closed here when it goes out of scope
         }
 
-        // 2. CRITICAL: Release ALL handles to the original file
+        // Release ALL handles to the original file
         drop(self.mmap.take());
         let _ = self.file.unlock();
 
@@ -249,10 +274,10 @@ impl Bindle {
         let old_file = std::mem::replace(&mut self.file, File::open(&tmp_path)?);
         drop(old_file);
 
-        // 3. Perform the atomic rename while no handles point to the original path
+        // Perform the atomic rename while no handles point to the original path
         std::fs::rename(&tmp_path, &self.path)?;
 
-        // 4. Re-establish the state for the Bindle struct
+        // Re-establish the state for the Bindle struct
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         file.lock_shared()?;
         let mmap = unsafe { Mmap::map(&file)? };
