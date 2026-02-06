@@ -96,6 +96,10 @@ bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress c
 
 bool bindle_exists(const struct Bindle *ctx, const char *name);
 
+/**
+ * Create a new Stream, while the stream is active (until bindle_stream_finish is called), the
+ * Bindle struct should not be accessed.
+ */
 struct BindleStream *bindle_stream_new(struct Bindle *ctx,
                                        const char *name,
                                        enum BindleCompress compress);
