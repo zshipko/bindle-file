@@ -305,6 +305,8 @@ pub unsafe extern "C" fn bindle_exists(ctx: *const Bindle, name: *const c_char) 
     b.exists(name_str)
 }
 
+/// Create a new Stream, while the stream is active (until bindle_stream_finish is called), the
+/// Bindle struct should not be accessed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_stream_new<'a>(
     ctx: *mut Bindle,
