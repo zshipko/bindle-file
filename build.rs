@@ -12,5 +12,5 @@ fn main() {
         .with_config(config)
         .generate()
         .expect("Unable to generate bindings")
-        .write_to_file(PathBuf::from(crate_dir).join("bindle.h"));
+        .write_to_file(PathBuf::from(crate_dir).join("include/bindle.h"));
 }
