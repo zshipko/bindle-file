@@ -37,6 +37,9 @@ enum Commands {
         /// Use zstd compression
         #[arg(short, long)]
         compress: bool,
+        /// Run vacuum after adding
+        #[arg(long)]
+        vacuum: bool,
     },
 
     /// Extract an entry's data to stdout
@@ -46,6 +49,18 @@ enum Commands {
         bindle_file: PathBuf,
         /// Name of the entry to extract
         name: String,
+    },
+
+    /// Remove an entry from the archive
+    Remove {
+        /// Bindle archive file
+        #[arg(value_name = "BINDLE_FILE")]
+        bindle_file: PathBuf,
+        /// Name of the entry to remove
+        name: String,
+        /// Run vacuum after removing
+        #[arg(long)]
+        vacuum: bool,
     },
 
     /// Pack an entire directory into the archive
@@ -62,6 +77,9 @@ enum Commands {
         /// Append to existing file
         #[arg(short, long)]
         append: bool,
+        /// Run vacuum after packing
+        #[arg(long)]
+        vacuum: bool,
     },
 
     /// Unpack the archive to a local directory
@@ -131,6 +149,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             file_path,
             compress,
             bindle_file,
+            vacuum,
         } => {
             let mut b = init(bindle_file.clone());
             let data = std::fs::read(&file_path)?;
@@ -152,6 +171,11 @@ fn handle_command(command: Commands) -> io::Result<()> {
             );
             b.save()?;
 
+            if vacuum {
+                println!("VACUUM {}", bindle_file.display());
+                b.vacuum()?;
+            }
+
             println!("OK");
         }
 
@@ -170,14 +194,39 @@ fn handle_command(command: Commands) -> io::Result<()> {
             }
         }
 
+        Commands::Remove {
+            name,
+            bindle_file,
+            vacuum,
+        } => {
+            let mut b = init(bindle_file.clone());
+            if b.remove(&name) {
+                println!("REMOVE '{}' from {}", name, bindle_file.display());
+                b.save()?;
+
+                if vacuum {
+                    println!("VACUUM {}", bindle_file.display());
+                    b.vacuum()?;
+                }
+
+                println!("OK");
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("ERROR '{}' not found in {}", name, bindle_file.display()),
+                ));
+            }
+        }
+
         Commands::Pack {
             bindle_file,
             src_dir,
             compress,
             append,
+            vacuum,
         } => {
             println!("PACK {} -> {}", src_dir.display(), bindle_file.display());
-            let mut b = init(bindle_file);
+            let mut b = init(bindle_file.clone());
             if !append {
                 b.clear();
             }
@@ -190,6 +239,12 @@ fn handle_command(command: Commands) -> io::Result<()> {
                 },
             )?;
             b.save()?;
+
+            if vacuum {
+                println!("VACUUM {}", bindle_file.display());
+                b.vacuum()?;
+            }
+
             println!("OK");
         }
 

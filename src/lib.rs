@@ -405,7 +405,12 @@ impl Bindle {
             magic: FOOTER_MAGIC,
         };
         self.file.write_all(footer.as_bytes())?;
+
+        // Truncate file to current position to remove any old data
+        let current_pos = self.file.stream_position()?;
+        self.file.set_len(current_pos)?;
         self.file.flush()?;
+
         self.mmap = Some(unsafe { Mmap::map(&self.file)? });
         self.file.lock_shared()?;
         Ok(())
@@ -582,6 +587,13 @@ impl Bindle {
     /// Checks if an entry exists in the archive index.
     pub fn exists(&self, name: &str) -> bool {
         self.index.contains_key(name)
+    }
+
+    /// Remove an entry from the index.
+    /// The data remains in the file until vacuum() is called.
+    /// Returns true if the entry existed and was removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.index.remove(name).is_some()
     }
 
     /// Recursively packs a directory into the archive.
@@ -968,5 +980,44 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_remove_entry() {
+        let path = "test_remove.bindl";
+        let _ = fs::remove_file(path);
+
+        let mut b = Bindle::open(path).expect("Failed to open");
+
+        // Add some entries
+        b.add("file1.txt", b"Content 1", Compress::None).unwrap();
+        b.add("file2.txt", b"Content 2", Compress::None).unwrap();
+        b.add("file3.txt", b"Content 3", Compress::None).unwrap();
+        b.save().unwrap();
+
+        assert_eq!(b.len(), 3);
+        assert!(b.exists("file2.txt"));
+
+        // Remove an entry
+        assert!(b.remove("file2.txt"));
+        assert_eq!(b.len(), 2);
+        assert!(!b.exists("file2.txt"));
+
+        // Try to remove non-existent entry
+        assert!(!b.remove("nonexistent.txt"));
+
+        // Save and reload to verify persistence
+        b.save().unwrap();
+        let b2 = Bindle::open(path).unwrap();
+        assert_eq!(b2.len(), 2);
+        assert!(b2.exists("file1.txt"));
+        assert!(!b2.exists("file2.txt"));
+        assert!(b2.exists("file3.txt"));
+
+        // Verify data still readable for remaining entries
+        assert_eq!(b2.read("file1.txt").unwrap().as_ref(), b"Content 1");
+        assert_eq!(b2.read("file3.txt").unwrap().as_ref(), b"Content 3");
+
+        fs::remove_file(path).ok();
     }
 }

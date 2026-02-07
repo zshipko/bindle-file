@@ -305,6 +305,26 @@ pub unsafe extern "C" fn bindle_exists(ctx: *const Bindle, name: *const c_char) 
     b.exists(name_str)
 }
 
+/// Remove an entry from the index.
+/// The data remains in the file until bindle_vacuum is called.
+/// Returns true if the entry existed and was removed, false otherwise.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_remove(ctx: *mut Bindle, name: *const c_char) -> bool {
+    if ctx.is_null() || name.is_null() {
+        return false;
+    }
+
+    let b = unsafe { &mut *ctx };
+    let name_str = unsafe {
+        match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+
+    b.remove(name_str)
+}
+
 /// Create a new Writer, while the stream is active (until bindle_stream_finish is called), the
 /// Bindle struct should not be accessed.
 #[unsafe(no_mangle)]

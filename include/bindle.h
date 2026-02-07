@@ -99,6 +99,13 @@ bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress c
 bool bindle_exists(const struct Bindle *ctx, const char *name);
 
 /**
+ * Remove an entry from the index.
+ * The data remains in the file until bindle_vacuum is called.
+ * Returns true if the entry existed and was removed, false otherwise.
+ */
+bool bindle_remove(struct Bindle *ctx, const char *name);
+
+/**
  * Create a new Writer, while the stream is active (until bindle_stream_finish is called), the
  * Bindle struct should not be accessed.
  */
