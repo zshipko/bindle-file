@@ -37,6 +37,32 @@ def format_time(seconds: float) -> str:
         return f"{seconds:.3f} s"
 
 
+def verify_extraction(src_dir: Path, extract_dir: Path) -> None:
+    """Verify extracted files match source files."""
+    src_files = {f.relative_to(src_dir): f for f in src_dir.rglob("*") if f.is_file()}
+    extract_files = {f.relative_to(extract_dir): f for f in extract_dir.rglob("*") if f.is_file()}
+
+    # Check file count
+    if len(src_files) != len(extract_files):
+        raise ValueError(f"File count mismatch: {len(src_files)} source, {len(extract_files)} extracted")
+
+    # Check each file exists and has correct size
+    for rel_path, src_file in src_files.items():
+        if rel_path not in extract_files:
+            raise ValueError(f"Missing file in extraction: {rel_path}")
+
+        extract_file = extract_files[rel_path]
+        src_size = src_file.stat().st_size
+        extract_size = extract_file.stat().st_size
+
+        if src_size != extract_size:
+            raise ValueError(f"Size mismatch for {rel_path}: {src_size} vs {extract_size}")
+
+        # Verify content matches
+        if src_file.read_bytes() != extract_file.read_bytes():
+            raise ValueError(f"Content mismatch for {rel_path}")
+
+
 def create_test_data(base_dir: Path) -> None:
     """Create a variety of test files."""
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +116,9 @@ def benchmark_bindle_uncompressed(bindle_bin: Path, src_dir: Path, archive_path:
     )
     unpack_time = time.perf_counter() - start
 
+    # Verify extraction (not timed)
+    verify_extraction(src_dir, extract_dir)
+
     return pack_time, size, unpack_time
 
 
@@ -119,6 +148,9 @@ def benchmark_bindle_compressed(bindle_bin: Path, src_dir: Path, archive_path: P
     )
     unpack_time = time.perf_counter() - start
 
+    # Verify extraction (not timed)
+    verify_extraction(src_dir, extract_dir)
+
     return pack_time, size, unpack_time
 
 
@@ -145,6 +177,9 @@ def benchmark_tar(src_dir: Path, archive_path: Path) -> tuple[float, int, float]
         check=True,
     )
     unpack_time = time.perf_counter() - start
+
+    # Verify extraction (not timed)
+    verify_extraction(src_dir, extract_dir)
 
     return pack_time, size, unpack_time
 
@@ -173,6 +208,9 @@ def benchmark_tar_gz(src_dir: Path, archive_path: Path) -> tuple[float, int, flo
     )
     unpack_time = time.perf_counter() - start
 
+    # Verify extraction (not timed)
+    verify_extraction(src_dir, extract_dir)
+
     return pack_time, size, unpack_time
 
 
@@ -199,6 +237,9 @@ def benchmark_zip(src_dir: Path, archive_path: Path) -> tuple[float, int, float]
         check=True,
     )
     unpack_time = time.perf_counter() - start
+
+    # Verify extraction (not timed)
+    verify_extraction(src_dir, extract_dir)
 
     return pack_time, size, unpack_time
 

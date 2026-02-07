@@ -1,6 +1,6 @@
 # bindle-file
 
-[bindle](https://en.wikipedia.org/wiki/Bindle) is an efficient, general purpose binary archive format for collecting files.
+[bindle](https://en.wikipedia.org/wiki/Bindle) is an fast/efficient, binary archive format.
 
 The format uses memory-mapped I/O for fast reads, optional zstd compression, and supports append-only writes with shadowing for updates. Files can be added incrementally without rewriting the entire archive.
 
