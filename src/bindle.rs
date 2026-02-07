@@ -210,12 +210,12 @@ impl Bindle {
 
         // Copy only live entries from original to temp
         for entry in self.index.values_mut() {
-            let mut buf = vec![0u8; entry.compressed_size() as usize];
             self.file.seek(SeekFrom::Start(entry.offset()))?;
-            self.file.read_exact(&mut buf)?;
-
             temp_file.seek(SeekFrom::Start(current_offset))?;
-            temp_file.write_all(&buf)?;
+
+            // Stream data without allocating full buffer
+            let mut limited = (&mut self.file).take(entry.compressed_size());
+            io::copy(&mut limited, &mut temp_file)?;
 
             entry.set_offset(current_offset);
             let pad = pad::<8, u64>(entry.compressed_size());
