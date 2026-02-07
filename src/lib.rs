@@ -1,3 +1,4 @@
+use crc32fast::Hasher;
 use fs2::FileExt;
 use memmap2::Mmap;
 use std::borrow::Cow;
@@ -79,6 +80,10 @@ impl Entry {
             _ => Compress::default(),
         }
     }
+
+    pub fn crc32(&self) -> u32 {
+        u32::from_le_bytes(self.crc32)
+    }
 }
 
 #[repr(C, packed)]
@@ -104,14 +109,22 @@ pub enum Either<A, B> {
 
 pub struct Reader<'a> {
     decoder: Either<zstd::Decoder<'static, BufReader<io::Cursor<&'a [u8]>>>, io::Cursor<&'a [u8]>>,
+    crc32_hasher: Hasher,
+    expected_crc32: u32,
 }
 
 impl<'a> Read for Reader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match &mut self.decoder {
-            Either::Left(x) => x.read(buf),
-            Either::Right(x) => x.read(buf),
+        let n = match &mut self.decoder {
+            Either::Left(x) => x.read(buf)?,
+            Either::Right(x) => x.read(buf)?,
+        };
+
+        if n > 0 {
+            self.crc32_hasher.update(&buf[..n]);
         }
+
+        Ok(n)
     }
 }
 
@@ -129,12 +142,28 @@ impl<'a> Seek for Reader<'a> {
     }
 }
 
+impl<'a> Reader<'a> {
+    /// Verify the CRC32 of the data read so far.
+    /// This should be called after all data has been read to ensure data integrity.
+    pub fn verify_crc32(&self) -> io::Result<()> {
+        let computed_crc = self.crc32_hasher.clone().finalize();
+        if computed_crc != self.expected_crc32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CRC32 mismatch: expected {:x}, got {:x}", self.expected_crc32, computed_crc),
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub struct Writer<'a> {
     pub(crate) bindle: &'a mut Bindle,
     pub(crate) encoder: Option<zstd::Encoder<'a, std::fs::File>>,
     pub(crate) name: String,
     pub(crate) start_offset: u64,
     pub(crate) uncompressed_size: u64,
+    pub(crate) crc32_hasher: Hasher,
 }
 
 impl<'a> Drop for Writer<'a> {
@@ -161,6 +190,7 @@ impl<'a> Writer<'a> {
         }
 
         self.uncompressed_size += data.len() as u64;
+        self.crc32_hasher.update(data);
 
         if let Some(encoder) = &mut self.encoder {
             encoder.write_all(data)?;
@@ -197,10 +227,13 @@ impl<'a> Writer<'a> {
 
         self.bindle.data_end = current_pos + pad_len;
 
+        let crc32 = self.crc32_hasher.clone().finalize();
+
         let entry = Entry {
             offset: self.start_offset.to_le_bytes(),
             compressed_size: compressed_size.to_le_bytes(),
             uncompressed_size: self.uncompressed_size.to_le_bytes(),
+            crc32: crc32.to_le_bytes(),
             compression_type,
             name_len: (self.name.len() as u16).to_le_bytes(),
             ..Default::default()
@@ -460,24 +493,35 @@ impl Bindle {
         let entry = self.index.get(name)?;
         let mmap = self.mmap.as_ref()?;
 
-        if entry.compression_type == Compress::Zstd as u8 {
-            let data = mmap.get(
+        let data = if entry.compression_type == Compress::Zstd as u8 {
+            let compressed_data = mmap.get(
                 entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize,
             )?;
             let mut out = Vec::with_capacity(entry.uncompressed_size() as usize);
-            zstd::Decoder::new(data).ok()?.read_to_end(&mut out).ok()?;
-            Some(Cow::Owned(out))
+            zstd::Decoder::new(compressed_data).ok()?.read_to_end(&mut out).ok()?;
+            Cow::Owned(out)
         } else {
-            let data = mmap.get(
+            let uncompressed_data = mmap.get(
                 entry.offset() as usize..(entry.offset() + entry.uncompressed_size()) as usize,
             )?;
-            Some(Cow::Borrowed(data))
+            Cow::Borrowed(uncompressed_data)
+        };
+
+        // Verify CRC32
+        let computed_crc = crc32fast::hash(&data);
+        if computed_crc != entry.crc32() {
+            return None;
         }
+
+        Some(data)
     }
 
     /// Read to an `std::io::Write`
     pub fn read_to<W: std::io::Write>(&self, name: &str, mut w: W) -> std::io::Result<u64> {
-        std::io::copy(&mut self.reader(name)?, &mut w)
+        let mut reader = self.reader(name)?;
+        let bytes_copied = std::io::copy(&mut reader, &mut w)?;
+        reader.verify_crc32()?;
+        Ok(bytes_copied)
     }
 
     // Returns a seekable reader for an entry.
@@ -503,10 +547,14 @@ impl Bindle {
             let decoder = zstd::Decoder::new(cursor)?;
             Ok(Reader {
                 decoder: Either::Left(decoder),
+                crc32_hasher: Hasher::new(),
+                expected_crc32: entry.crc32(),
             })
         } else {
             Ok(Reader {
                 decoder: Either::Right(cursor),
+                crc32_hasher: Hasher::new(),
+                expected_crc32: entry.crc32(),
             })
         }
     }
@@ -596,6 +644,7 @@ impl Bindle {
             },
             start_offset,
             uncompressed_size: 0,
+            crc32_hasher: Hasher::new(),
         })
     }
 }
@@ -839,6 +888,84 @@ mod tests {
         let result = b.read("streamed_file.txt").expect("Entry not found");
         assert_eq!(result.as_ref(), expected);
         assert_eq!(result.len(), expected.len());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_crc32_corruption_detection() {
+        let path = "test_crc32.bindl";
+        let _ = std::fs::remove_file(path);
+        let data = b"Test data for CRC32 verification";
+
+        // 1. Create a file with valid data
+        {
+            let mut b = Bindle::open(path).expect("Failed to open");
+            b.add("test.txt", data, Compress::None).unwrap();
+            b.save().unwrap();
+        }
+
+        // 2. Verify that reading with correct data works
+        {
+            let b = Bindle::open(path).expect("Failed to reopen");
+            let result = b.read("test.txt").expect("Should read successfully");
+            assert_eq!(result.as_ref(), data);
+        }
+
+        // 3. Corrupt the data by modifying a byte directly in the file
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = OpenOptions::new()
+                .write(true)
+                .read(true)
+                .open(path)
+                .unwrap();
+
+            // Skip the header and modify the first byte of data
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64)).unwrap();
+            file.write_all(b"X").unwrap(); // Corrupt first byte
+            file.flush().unwrap();
+        }
+
+        // 4. Verify that reading corrupted data fails CRC32 check
+        {
+            let b = Bindle::open(path).expect("Failed to reopen after corruption");
+            let result = b.read("test.txt");
+            assert!(result.is_none(), "Read should fail due to CRC32 mismatch");
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_crc32_with_compression() {
+        let path = "test_crc32_compressed.bindl";
+        let _ = std::fs::remove_file(path);
+        let data = vec![b'A'; 2000]; // Large enough to trigger compression
+
+        // 1. Create a file with compressed data
+        {
+            let mut b = Bindle::open(path).expect("Failed to open");
+            b.add("compressed.bin", &data, Compress::Zstd).unwrap();
+            b.save().unwrap();
+        }
+
+        // 2. Verify that reading compressed data works and CRC32 is verified
+        {
+            let b = Bindle::open(path).expect("Failed to reopen");
+            let result = b.read("compressed.bin").expect("Should read successfully");
+            assert_eq!(result.as_ref(), data.as_slice());
+        }
+
+        // 3. Also test with the streaming reader
+        {
+            let b = Bindle::open(path).expect("Failed to reopen");
+            let mut reader = b.reader("compressed.bin").unwrap();
+            let mut output = Vec::new();
+            std::io::copy(&mut reader, &mut output).unwrap();
+            reader.verify_crc32().expect("CRC32 should match");
+            assert_eq!(output, data);
+        }
 
         let _ = std::fs::remove_file(path);
     }

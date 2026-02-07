@@ -114,6 +114,13 @@ struct BindleReader *bindle_reader_new(const struct Bindle *ctx, const char *nam
 
 ptrdiff_t bindle_reader_read(struct BindleReader *reader, uint8_t *buffer, size_t buffer_len);
 
+/**
+ * Verify the CRC32 of data read from the reader.
+ * Should be called after reading all data to ensure integrity.
+ * Returns true if CRC32 matches, false otherwise.
+ */
+bool bindle_reader_verify_crc32(const struct BindleReader *reader);
+
 void bindle_reader_close(struct BindleReader *reader);
 
 #endif  /* BINDLE_H */

@@ -380,6 +380,19 @@ pub unsafe extern "C" fn bindle_reader_read(
     }
 }
 
+/// Verify the CRC32 of data read from the reader.
+/// Should be called after reading all data to ensure integrity.
+/// Returns true if CRC32 matches, false otherwise.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_reader_verify_crc32(reader: *const Reader) -> bool {
+    if reader.is_null() {
+        return false;
+    }
+
+    let r = unsafe { &*reader };
+    r.verify_crc32().is_ok()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bindle_reader_close(reader: *mut Reader) {
     if !reader.is_null() {
