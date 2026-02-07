@@ -29,7 +29,7 @@ archive.vacuum()?;
 
 ## C API
 
-The library includes C bindings for use from other languages:
+The library includes C bindings:
 
 ```c
 #include "bindle.h"
@@ -47,6 +47,14 @@ uint8_t* raw = bindle_read_uncompressed_direct(bindle, "file.txt", &size);
 free(data);
 bindle_close(bindle);
 ```
+
+Run:
+
+```sh
+make build
+```
+
+To build `libbindle` and copy in to the root of repository
 
 ## CLI
 

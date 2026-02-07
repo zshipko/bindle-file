@@ -4,7 +4,7 @@ use memmap2::Mmap;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -194,24 +194,29 @@ impl Bindle {
         self.file.seek(SeekFrom::Start(self.data_end))?;
         let index_start = self.data_end;
 
-        for (name, entry) in &self.index {
-            self.file.write_all(entry.as_bytes())?;
-            self.file.write_all(name.as_bytes())?;
-            let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
-            if pad > 0 {
-                write_padding(&mut self.file, pad)?;
+        // Use buffered writer to batch index writes
+        {
+            let mut writer = BufWriter::new(&mut self.file);
+            for (name, entry) in &self.index {
+                writer.write_all(entry.as_bytes())?;
+                writer.write_all(name.as_bytes())?;
+                let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
+                if pad > 0 {
+                    write_padding(&mut writer, pad)?;
+                }
             }
-        }
 
-        let footer = Footer::new(index_start, self.index.len() as u32, FOOTER_MAGIC);
-        self.file.write_all(footer.as_bytes())?;
+            let footer = Footer::new(index_start, self.index.len() as u32, FOOTER_MAGIC);
+            writer.write_all(footer.as_bytes())?;
+            writer.flush()?;
+        } // Drop writer here to release borrow
 
         // Truncate file to current position to remove any old data
         let current_pos = self.file.stream_position()?;
         self.file.set_len(current_pos)?;
-        self.file.flush()?;
 
-        self.mmap = Some(unsafe { Mmap::map(&self.file)? });
+        let mmap = unsafe { Mmap::map(&self.file)? };
+        self.mmap = Some(mmap);
         self.file.lock_shared()?;
         Ok(())
     }
@@ -431,10 +436,9 @@ impl Bindle {
             let name = current
                 .strip_prefix(base)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                .to_string_lossy();
-            let mut data = Vec::new();
-            File::open(current)?.read_to_end(&mut data)?;
-            self.add(&name, &data, compress)?;
+                .to_str()
+                .unwrap_or_default();
+            self.add_file(&name, current, compress)?;
         }
         Ok(())
     }
@@ -447,14 +451,21 @@ impl Bindle {
         if let Some(parent) = dest_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        for (name, _) in &self.index {
-            if let Some(data) = self.read(name) {
-                let file_path = dest_path.join(name);
-                if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(file_path, data)?;
+
+        // Sort entries by physical offset for sequential reads (better cache locality)
+        let mut entries: Vec<_> = self.index.iter().collect();
+        entries.sort_by_key(|(_, entry)| entry.offset());
+
+        for (name, _) in entries {
+            let file_path = dest_path.join(name);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent)?;
             }
+            // Use streaming I/O instead of loading entire file into memory
+            let mut reader = self.reader(name)?;
+            let mut file = File::create(&file_path)?;
+            io::copy(&mut reader, &mut file)?;
+            reader.verify_crc32()?;
         }
         Ok(())
     }
@@ -464,18 +475,24 @@ impl Bindle {
     /// The writer must be closed and then [`save()`](Bindle::save) must be called to commit the entry.
     pub fn writer<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Writer<'a>> {
         self.file.lock_exclusive()?;
-        self.file.seek(SeekFrom::Start(self.data_end))?;
+        // Only seek if not already at the correct position
+        let current_pos = self.file.stream_position()?;
+        if current_pos != self.data_end {
+            self.file.seek(SeekFrom::Start(self.data_end))?;
+        }
         let compress = self.should_auto_compress(compress, 0);
-        let f = self.file.try_clone()?;
         let start_offset = self.data_end;
+        // Only clone file handle if needed for compression
+        let encoder = if compress {
+            let f = self.file.try_clone()?;
+            Some(zstd::Encoder::new(f, 3)?)
+        } else {
+            None
+        };
         Ok(Writer {
             name: name.to_string(),
             bindle: self,
-            encoder: if compress {
-                Some(zstd::Encoder::new(f, 3)?)
-            } else {
-                None
-            },
+            encoder,
             start_offset,
             uncompressed_size: 0,
             crc32_hasher: Hasher::new(),

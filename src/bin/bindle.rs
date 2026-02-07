@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::PathBuf;
 use std::process;
 
@@ -32,11 +32,14 @@ enum Commands {
 
         /// Name of the entry inside the archive
         name: String,
-        /// Path to the local file to read from
-        file_path: PathBuf,
+        /// Path to the local file to read from (reads from stdin if omitted)
+        file_path: Option<PathBuf>,
         /// Use zstd compression
         #[arg(short, long)]
         compress: bool,
+        /// Pass data directly as an argument
+        #[arg(short, long, conflicts_with = "file_path")]
+        data: Option<String>,
         /// Run vacuum after adding
         #[arg(long)]
         vacuum: bool,
@@ -118,6 +121,14 @@ fn handle_command(command: Commands) -> io::Result<()> {
         }
     };
 
+    let init_load = |path: PathBuf| match Bindle::load(&path) {
+        Ok(bindle) => bindle,
+        Err(e) => {
+            eprintln!("ERROR unable to open {}: {}", path.display(), e);
+            process::exit(1);
+        }
+    };
+
     match command {
         Commands::List { bindle_file } => {
             println!(
@@ -128,7 +139,7 @@ fn handle_command(command: Commands) -> io::Result<()> {
             if !bindle_file.exists() {
                 return Ok(());
             }
-            let b = init(bindle_file);
+            let b = init_load(bindle_file);
 
             for (name, entry) in b.index().iter() {
                 let size = entry.uncompressed_size();
@@ -147,27 +158,42 @@ fn handle_command(command: Commands) -> io::Result<()> {
         Commands::Add {
             name,
             file_path,
+            data: data_arg,
             compress,
             bindle_file,
             vacuum,
         } => {
             let mut b = init(bindle_file.clone());
-            let data = std::fs::read(&file_path)?;
+            let compress_mode = if compress {
+                Compress::Zstd
+            } else {
+                Compress::None
+            };
 
-            b.add(
-                &name,
-                &data,
-                if compress {
-                    Compress::Zstd
-                } else {
-                    Compress::None
-                },
-            )?;
+            // Determine data source and method: --data flag, file path, or stdin
+            let size = if let Some(d) = data_arg {
+                // Direct data from argument
+                let bytes = d.into_bytes();
+                let len = bytes.len();
+                b.add(&name, &bytes, compress_mode)?;
+                len
+            } else if let Some(path) = file_path {
+                // Use add_file to avoid loading entire file into memory
+                b.add_file(&name, &path, compress_mode)?;
+                std::fs::metadata(&path)?.len() as usize
+            } else {
+                // Stream from stdin using writer
+                let mut writer = b.writer(&name, compress_mode)?;
+                let size = io::copy(&mut io::stdin(), &mut writer)?;
+                writer.close()?;
+                size as usize
+            };
+
             println!(
                 "ADD '{}' -> {} ({} bytes)",
                 name,
                 bindle_file.display(),
-                data.len()
+                size
             );
             b.save()?;
 
@@ -180,16 +206,11 @@ fn handle_command(command: Commands) -> io::Result<()> {
         }
 
         Commands::Cat { name, bindle_file } => {
-            let b = init(bindle_file.clone());
-            match b.read(&name) {
-                Some(data) => {
-                    io::stdout().write_all(&data)?;
-                }
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("ERROR '{}' not found in {}", name, bindle_file.display()),
-                    ));
+            let b = init_load(bindle_file.clone());
+            match b.read_to(name.as_str(), io::stdout()) {
+                Ok(_n) => {}
+                Err(e) => {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, e));
                 }
             }
         }
@@ -253,14 +274,14 @@ fn handle_command(command: Commands) -> io::Result<()> {
             dest_dir,
         } => {
             println!("UNPACK {} -> {}", bindle_file.display(), dest_dir.display());
-            let b = init(bindle_file);
+            let b = init_load(bindle_file);
             b.unpack(dest_dir)?;
             println!("OK");
         }
 
         Commands::Vacuum { bindle_file } => {
             println!("VACUUM {}", bindle_file.display());
-            let mut b = init(bindle_file);
+            let mut b = init_load(bindle_file);
             b.vacuum()?;
             println!("OK");
         }
