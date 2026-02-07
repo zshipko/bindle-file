@@ -196,59 +196,49 @@ impl Bindle {
     pub fn vacuum(&mut self) -> io::Result<()> {
         let temp_path = self.path.with_extension("tmp");
 
-        // Create and lock temp file
-        let result = {
-            let mut temp_file = OpenOptions::new()
-                .write(true)
-                .read(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp_path)?;
+        // Create temp file and keep handle to reuse after rename
+        let mut temp_file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)?;
 
-            temp_file.lock_exclusive()?;
-            temp_file.write_all(BNDL_MAGIC)?;
-            let mut current_offset = HEADER_SIZE as u64;
+        temp_file.lock_exclusive()?;
+        temp_file.write_all(BNDL_MAGIC)?;
+        let mut current_offset = HEADER_SIZE as u64;
 
-            // Copy only live entries from original to temp
-            for entry in self.index.values_mut() {
-                let mut buf = vec![0u8; entry.compressed_size() as usize];
-                self.file.seek(SeekFrom::Start(entry.offset()))?;
-                self.file.read_exact(&mut buf)?;
+        // Copy only live entries from original to temp
+        for entry in self.index.values_mut() {
+            let mut buf = vec![0u8; entry.compressed_size() as usize];
+            self.file.seek(SeekFrom::Start(entry.offset()))?;
+            self.file.read_exact(&mut buf)?;
 
-                temp_file.seek(SeekFrom::Start(current_offset))?;
-                temp_file.write_all(&buf)?;
+            temp_file.seek(SeekFrom::Start(current_offset))?;
+            temp_file.write_all(&buf)?;
 
-                entry.set_offset(current_offset);
-                let pad = pad::<8, u64>(entry.compressed_size());
-                if pad > 0 {
-                    write_padding(&mut temp_file, pad as usize)?;
-                }
-                current_offset += entry.compressed_size() + pad;
+            entry.set_offset(current_offset);
+            let pad = pad::<8, u64>(entry.compressed_size());
+            if pad > 0 {
+                write_padding(&mut temp_file, pad as usize)?;
             }
-
-            // Write the index and footer
-            let index_start = current_offset;
-            for (name, entry) in &self.index {
-                temp_file.write_all(entry.as_bytes())?;
-                temp_file.write_all(name.as_bytes())?;
-                let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
-                if pad > 0 {
-                    write_padding(&mut temp_file, pad)?;
-                }
-            }
-
-            let footer = Footer::new(index_start, self.index.len() as u32, FOOTER_MAGIC);
-            temp_file.write_all(footer.as_bytes())?;
-            temp_file.sync_all()?;
-
-            Ok(())
-        };
-
-        // Handle result
-        if let Err(e) = result {
-            std::fs::remove_file(&temp_path).ok();
-            return Err(e);
+            current_offset += entry.compressed_size() + pad;
         }
+
+        // Write the index and footer
+        let index_start = current_offset;
+        for (name, entry) in &self.index {
+            temp_file.write_all(entry.as_bytes())?;
+            temp_file.write_all(name.as_bytes())?;
+            let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
+            if pad > 0 {
+                write_padding(&mut temp_file, pad)?;
+            }
+        }
+
+        let footer = Footer::new(index_start, self.index.len() as u32, FOOTER_MAGIC);
+        temp_file.write_all(footer.as_bytes())?;
+        temp_file.sync_all()?;
 
         // Acquire exclusive lock just before rename to prevent concurrent access
         self.file.lock_exclusive()?;
@@ -260,17 +250,16 @@ impl Bindle {
         // Atomically replace original with temp
         std::fs::rename(&temp_path, &self.path)?;
 
-        // Re-open the new file
-        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-        file.lock_shared()?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        // Reuse temp_file handle (still valid after rename)
+        temp_file.lock_shared()?;
+        let mmap = unsafe { Mmap::map(&temp_file)? };
 
         let footer_pos = mmap.len() - FOOTER_SIZE;
         let footer = Footer::read_from_bytes(&mmap[footer_pos..]).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Failed to read footer after vacuum")
         })?;
 
-        self.file = file;
+        self.file = temp_file;
         self.mmap = Some(mmap);
         self.data_end = footer.index_offset();
 
