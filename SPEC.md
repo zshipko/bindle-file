@@ -30,29 +30,29 @@ Data blobs begin at offset `0x08`.
 - **Shadowing:** New versions of existing files are simply appended to the end of the data segment. The file remains append-only until a vacuum operation is performed.
 
 ### 2.3 Index Entry
-The index is a series of entries. Each entry consists of a fixed metadata block followed by a variable-length filename.
+The index is a series of entries. Each entry consists of a fixed metadata block followed by a variable-length filename. All multi-byte integers are stored in little-endian byte order.
 
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `offset` | 8 bytes | u64 | Absolute file offset to the data blob |
 | `c_size` | 8 bytes | u64 | Compressed size on disk |
 | `u_size` | 8 bytes | u64 | Original uncompressed size |
-| `crc32` | 4 bytes | u32 | Checksum of the stored data |
+| `crc32` | 4 bytes | u32 | CRC32 checksum of the uncompressed data |
 | `name_len` | 2 bytes | u16 | Length of the filename string |
-| `comp_type` | 1 byte | u8 | `0` = Raw, `1` = Zstandard |
+| `comp_type` | 1 byte | u8 | `0` = None, `1` = Zstd |
 | `reserved` | 1 byte | u8 | Alignment padding |
 | `filename` | Variable | UTF-8 | The entry name |
 
 **Padding:** After the filename, the file MUST be padded with null bytes (`\0`) to the next 8-byte boundary before the next entry begins.
 
 ### 2.4 Footer
-The last 16 bytes of the file are used to locate the index. Both fields are stored in little-endian format.
+The last 16 bytes of the file are used to locate the index. All fields are stored in little-endian format.
 
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `index_offset` | 8 bytes | u64 | Absolute offset to the start of the index |
 | `entry_count` | 4 bytes | u32 | Total number of unique entries in the index |
-| `magic`       | 4 bytes | u32 | Magic sentinel value `62 62 62 62` (ASCII: `bbbb`).
+| `magic`       | 4 bytes | u32 | Magic sentinel value `0x62626262` (ASCII: `bbbb`)
 
 ---
 
@@ -68,10 +68,10 @@ To "update" a file or add new ones:
 ### 3.2 Vacuuming
 To reclaim space used by shadowed data:
 1. Create a temporary file and write the `BINDL001` header.
-2. Iterate through the **live** index entries only.
-3. Copy the referenced data blobs to the new file, updating their offsets in a new in-memory index.
-4. Write the new Index and Footer to the temporary file.
-5. Atomically replace the old file with the new one.
+2. Iterate through the **live** index entries only, copying referenced data from the original.
+3. Write the new Index and Footer to the temporary file.
+4. Atomically replace the original file with the temporary file.
+5. On failure, delete the temporary file.
 
 ---
 

@@ -1,3 +1,4 @@
 # bindle-file
 
-`bindle` is a general purpose, binary archive format designed for efficient reads and writes.
+[bindle](https://en.wikipedia.org/wiki/Bindle) is a general purpose binary archive
+format for collecting files.

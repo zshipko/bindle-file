@@ -86,6 +86,9 @@ impl<'a> Writer<'a> {
 
         self.bindle.index.insert(self.name.clone(), entry);
         self.name.clear(); // Mark as closed
+
+        // Downgrade to shared lock after write completes
+        self.bindle.file.lock_shared()?;
         Ok(())
     }
 

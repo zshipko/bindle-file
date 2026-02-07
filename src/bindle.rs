@@ -194,43 +194,34 @@ impl Bindle {
     }
 
     pub fn vacuum(&mut self) -> io::Result<()> {
-        let backup_path = self.path.with_extension("backup");
+        let temp_path = self.path.with_extension("tmp");
 
-        // Release locks and close current file
-        drop(self.mmap.take());
-        let _ = self.file.unlock();
-
-        // Rename original to backup
-        std::fs::rename(&self.path, &backup_path)?;
-
-        // Open backup for reading
-        let mut backup_file = File::open(&backup_path)?;
-
-        // Create new file at original path
+        // Create and lock temp file
         let result = {
-            let mut new_file = OpenOptions::new()
+            let mut temp_file = OpenOptions::new()
                 .write(true)
                 .read(true)
                 .create(true)
                 .truncate(true)
-                .open(&self.path)?;
+                .open(&temp_path)?;
 
-            new_file.write_all(BNDL_MAGIC)?;
+            temp_file.lock_exclusive()?;
+            temp_file.write_all(BNDL_MAGIC)?;
             let mut current_offset = HEADER_SIZE as u64;
 
-            // Copy only live entries from backup to new file
+            // Copy only live entries from original to temp
             for entry in self.index.values_mut() {
                 let mut buf = vec![0u8; entry.compressed_size() as usize];
-                backup_file.seek(SeekFrom::Start(entry.offset()))?;
-                backup_file.read_exact(&mut buf)?;
+                self.file.seek(SeekFrom::Start(entry.offset()))?;
+                self.file.read_exact(&mut buf)?;
 
-                new_file.seek(SeekFrom::Start(current_offset))?;
-                new_file.write_all(&buf)?;
+                temp_file.seek(SeekFrom::Start(current_offset))?;
+                temp_file.write_all(&buf)?;
 
                 entry.set_offset(current_offset);
                 let pad = pad::<8, u64>(entry.compressed_size());
                 if pad > 0 {
-                    write_padding(&mut new_file, pad as usize)?;
+                    write_padding(&mut temp_file, pad as usize)?;
                 }
                 current_offset += entry.compressed_size() + pad;
             }
@@ -238,34 +229,36 @@ impl Bindle {
             // Write the index and footer
             let index_start = current_offset;
             for (name, entry) in &self.index {
-                new_file.write_all(entry.as_bytes())?;
-                new_file.write_all(name.as_bytes())?;
+                temp_file.write_all(entry.as_bytes())?;
+                temp_file.write_all(name.as_bytes())?;
                 let pad = pad::<BNDL_ALIGN, usize>(ENTRY_SIZE + name.len());
                 if pad > 0 {
-                    write_padding(&mut new_file, pad)?;
+                    write_padding(&mut temp_file, pad)?;
                 }
             }
 
             let footer = Footer::new(index_start, self.index.len() as u32, FOOTER_MAGIC);
-            new_file.write_all(footer.as_bytes())?;
-            new_file.sync_all()?;
+            temp_file.write_all(footer.as_bytes())?;
+            temp_file.sync_all()?;
 
             Ok(())
         };
 
         // Handle result
-        match result {
-            Ok(()) => {
-                // Success - delete backup
-                std::fs::remove_file(&backup_path).ok();
-            }
-            Err(e) => {
-                // Failure - restore from backup
-                std::fs::remove_file(&self.path).ok();
-                std::fs::rename(&backup_path, &self.path).ok();
-                return Err(e);
-            }
+        if let Err(e) = result {
+            std::fs::remove_file(&temp_path).ok();
+            return Err(e);
         }
+
+        // Acquire exclusive lock just before rename to prevent concurrent access
+        self.file.lock_exclusive()?;
+
+        // Release locks and close current file
+        drop(self.mmap.take());
+        let _ = self.file.unlock();
+
+        // Atomically replace original with temp
+        std::fs::rename(&temp_path, &self.path)?;
 
         // Re-open the new file
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
@@ -435,6 +428,7 @@ impl Bindle {
     }
 
     pub fn writer<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Writer<'a>> {
+        self.file.lock_exclusive()?;
         self.file.seek(SeekFrom::Start(self.data_end))?;
         let compress = self.should_auto_compress(compress, 0);
         let f = self.file.try_clone()?;
