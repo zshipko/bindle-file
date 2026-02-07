@@ -62,7 +62,9 @@ The `bindle` command provides basic operations:
 
 ```bash
 bindle add archive.bndl file.txt
-bindle read archive.bndl file.txt
+bindle cat archive.bndl file.txt
+bindle pack archive.bndl /some/dir
+bindle unpack archive.bndl /unpack/to/dir
 bindle list archive.bndl
 bindle vacuum archive.bndl
 ```
