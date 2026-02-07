@@ -46,31 +46,59 @@ pub enum Compress {
 #[repr(C, packed)]
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Clone, Copy, Debug, Default)]
 pub struct Entry {
-    pub offset: [u8; std::mem::size_of::<u64>()], // Use [u8; 8] for disk stability
-    pub compressed_size: [u8; std::mem::size_of::<u64>()],
-    pub uncompressed_size: [u8; std::mem::size_of::<u64>()],
-    pub crc32: [u8; std::mem::size_of::<u32>()],
-    pub name_len: [u8; std::mem::size_of::<u16>()],
+    pub offset: u64,
+    pub compressed_size: u64,
+    pub uncompressed_size: u64,
+    pub crc32: u32,
+    pub name_len: u16,
     pub compression_type: u8,
     pub _reserved: u8,
 }
 
-// Add helpers to convert back to numbers for Rust logic
+// The binary format uses little-endian byte order for all multi-byte integers.
+// These methods handle endianness conversion transparently:
+// - On little-endian systems (x86, ARM): zero overhead, direct access
+// - On big-endian systems: bytes are swapped to/from little-endian
+
 impl Entry {
     pub fn offset(&self) -> u64 {
-        u64::from_le_bytes(self.offset)
+        u64::from_le(self.offset)
+    }
+
+    pub fn set_offset(&mut self, value: u64) {
+        self.offset = value.to_le();
     }
 
     pub fn compressed_size(&self) -> u64 {
-        u64::from_le_bytes(self.compressed_size)
+        u64::from_le(self.compressed_size)
+    }
+
+    pub fn set_compressed_size(&mut self, value: u64) {
+        self.compressed_size = value.to_le();
     }
 
     pub fn uncompressed_size(&self) -> u64 {
-        u64::from_le_bytes(self.uncompressed_size)
+        u64::from_le(self.uncompressed_size)
+    }
+
+    pub fn set_uncompressed_size(&mut self, value: u64) {
+        self.uncompressed_size = value.to_le();
+    }
+
+    pub fn crc32(&self) -> u32 {
+        u32::from_le(self.crc32)
+    }
+
+    pub fn set_crc32(&mut self, value: u32) {
+        self.crc32 = value.to_le();
     }
 
     pub fn name_len(&self) -> usize {
-        u16::from_le_bytes(self.name_len) as usize
+        u16::from_le(self.name_len) as usize
+    }
+
+    pub fn set_name_len(&mut self, value: u16) {
+        self.name_len = value.to_le();
     }
 
     pub fn compression_type(&self) -> Compress {
@@ -79,10 +107,6 @@ impl Entry {
             1 => Compress::Zstd,
             _ => Compress::default(),
         }
-    }
-
-    pub fn crc32(&self) -> u32 {
-        u32::from_le_bytes(self.crc32)
     }
 }
 
@@ -150,7 +174,10 @@ impl<'a> Reader<'a> {
         if computed_crc != self.expected_crc32 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("CRC32 mismatch: expected {:x}, got {:x}", self.expected_crc32, computed_crc),
+                format!(
+                    "CRC32 mismatch: expected {:x}, got {:x}",
+                    self.expected_crc32, computed_crc
+                ),
             ));
         }
         Ok(())
@@ -227,17 +254,17 @@ impl<'a> Writer<'a> {
 
         self.bindle.data_end = current_pos + pad_len;
 
-        let crc32 = self.crc32_hasher.clone().finalize();
+        let crc32_value = self.crc32_hasher.clone().finalize();
 
-        let entry = Entry {
-            offset: self.start_offset.to_le_bytes(),
-            compressed_size: compressed_size.to_le_bytes(),
-            uncompressed_size: self.uncompressed_size.to_le_bytes(),
-            crc32: crc32.to_le_bytes(),
+        let mut entry = Entry {
             compression_type,
-            name_len: (self.name.len() as u16).to_le_bytes(),
             ..Default::default()
         };
+        entry.set_offset(self.start_offset);
+        entry.set_compressed_size(compressed_size);
+        entry.set_uncompressed_size(self.uncompressed_size);
+        entry.set_crc32(crc32_value);
+        entry.set_name_len(self.name.len() as u16);
 
         self.bindle.index.insert(self.name.clone(), entry);
         self.name.clear(); // Mark as closed
@@ -417,29 +444,40 @@ impl Bindle {
     }
 
     pub fn vacuum(&mut self) -> io::Result<()> {
-        let tmp_path = self.path.with_extension("tmp");
+        let backup_path = self.path.with_extension("backup");
 
-        // Create and populate the temporary file
-        {
+        // Release locks and close current file
+        drop(self.mmap.take());
+        let _ = self.file.unlock();
+
+        // Rename original to backup
+        std::fs::rename(&self.path, &backup_path)?;
+
+        // Open backup for reading
+        let mut backup_file = File::open(&backup_path)?;
+
+        // Create new file at original path
+        let result = {
             let mut new_file = OpenOptions::new()
                 .write(true)
+                .read(true)
                 .create(true)
                 .truncate(true)
-                .open(&tmp_path)?;
+                .open(&self.path)?;
 
             new_file.write_all(BNDL_MAGIC)?;
             let mut current_offset = HEADER_SIZE as u64;
 
-            // Copy only live entries to the new file
+            // Copy only live entries from backup to new file
             for entry in self.index.values_mut() {
                 let mut buf = vec![0u8; entry.compressed_size() as usize];
-                self.file.seek(SeekFrom::Start(entry.offset()))?;
-                self.file.read_exact(&mut buf)?;
+                backup_file.seek(SeekFrom::Start(entry.offset()))?;
+                backup_file.read_exact(&mut buf)?;
 
-                new_file.seek(SeekFrom::Start(current_offset as u64))?;
+                new_file.seek(SeekFrom::Start(current_offset))?;
                 new_file.write_all(&buf)?;
 
-                entry.offset = current_offset.to_le_bytes();
+                entry.set_offset(current_offset);
                 let pad = pad::<8, u64>(entry.compressed_size());
                 if pad > 0 {
                     new_file.write_all(&vec![0u8; pad as usize])?;
@@ -447,7 +485,7 @@ impl Bindle {
                 current_offset += entry.compressed_size() + pad;
             }
 
-            // Write the index and footer to the TEMP file before closing it
+            // Write the index and footer
             let index_start = current_offset;
             for (name, entry) in &self.index {
                 new_file.write_all(entry.as_bytes())?;
@@ -465,21 +503,25 @@ impl Bindle {
             };
             new_file.write_all(footer.as_bytes())?;
             new_file.sync_all()?;
-            // new_file is closed here when it goes out of scope
+
+            Ok(())
+        };
+
+        // Handle result
+        match result {
+            Ok(()) => {
+                // Success - delete backup
+                std::fs::remove_file(&backup_path).ok();
+            }
+            Err(e) => {
+                // Failure - restore from backup
+                std::fs::remove_file(&self.path).ok();
+                std::fs::rename(&backup_path, &self.path).ok();
+                return Err(e);
+            }
         }
 
-        // Release ALL handles to the original file
-        drop(self.mmap.take());
-        let _ = self.file.unlock();
-
-        // Re-open self.file in a way that allows us to drop it immediately
-        let old_file = std::mem::replace(&mut self.file, File::open(&tmp_path)?);
-        drop(old_file);
-
-        // Perform the atomic rename while no handles point to the original path
-        std::fs::rename(&tmp_path, &self.path)?;
-
-        // Re-establish the state for the Bindle struct
+        // Re-open the new file
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         file.lock_shared()?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -503,7 +545,10 @@ impl Bindle {
                 entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize,
             )?;
             let mut out = Vec::with_capacity(entry.uncompressed_size() as usize);
-            zstd::Decoder::new(compressed_data).ok()?.read_to_end(&mut out).ok()?;
+            zstd::Decoder::new(compressed_data)
+                .ok()?
+                .read_to_end(&mut out)
+                .ok()?;
             Cow::Owned(out)
         } else {
             let uncompressed_data = mmap.get(
