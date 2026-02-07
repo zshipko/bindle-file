@@ -27,6 +27,27 @@ archive.save()?;
 archive.vacuum()?;
 ```
 
+## C API
+
+The library includes C bindings for use from other languages:
+
+```c
+#include "bindle.h"
+
+Bindle* bindle = bindle_open("data.bndl");
+bindle_add(bindle, "file.txt", data, len, BindleCompressNone);
+bindle_save(bindle);
+
+size_t size;
+uint8_t* data = bindle_read(bindle, "file.txt", &size);
+
+// Or for uncompressed entries, read directly without decompression
+uint8_t* raw = bindle_read_uncompressed_direct(bindle, "file.txt", &size);
+
+free(data);
+bindle_close(bindle);
+```
+
 ## CLI
 
 The `bindle` command provides basic operations:
