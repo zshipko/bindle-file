@@ -1,3 +1,21 @@
+//! Bindle is a binary archive format for collecting files.
+//!
+//! The format uses memory-mapped I/O for fast reads, optional zstd compression,
+//! and supports append-only writes with shadowing for updates.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use bindle_file::{Bindle, Compress};
+//!
+//! let mut archive = Bindle::open("data.bndl")?;
+//! archive.add("file.txt", b"data", Compress::None)?;
+//! archive.save()?;
+//!
+//! let data = archive.read("file.txt").unwrap();
+//! # Ok::<(), std::io::Error>(())
+//! ```
+
 use std::io::{self, Write};
 
 // Module declarations

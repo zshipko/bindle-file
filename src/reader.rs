@@ -1,13 +1,28 @@
 use crc32fast::Hasher;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 
-pub enum Either<A, B> {
+pub(crate) enum Either<A, B> {
     Left(A),
     Right(B),
 }
 
+/// A streaming reader for archive entries.
+///
+/// Created by the archive's `reader()` method. Automatically decompresses compressed entries and tracks CRC32 for integrity verification.
+///
+/// # Example
+///
+/// ```no_run
+/// # use bindle_file::Bindle;
+/// # let archive = Bindle::open("data.bndl")?;
+/// let mut reader = archive.reader("file.txt")?;
+/// std::io::copy(&mut reader, &mut std::io::stdout())?;
+/// reader.verify_crc32()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub struct Reader<'a> {
-    pub(crate) decoder: Either<zstd::Decoder<'static, BufReader<io::Cursor<&'a [u8]>>>, io::Cursor<&'a [u8]>>,
+    pub(crate) decoder:
+        Either<zstd::Decoder<'static, BufReader<io::Cursor<&'a [u8]>>>, io::Cursor<&'a [u8]>>,
     pub(crate) crc32_hasher: Hasher,
     pub(crate) expected_crc32: u32,
 }
@@ -42,8 +57,10 @@ impl<'a> Seek for Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// Verify the CRC32 of the data read so far.
-    /// This should be called after all data has been read to ensure data integrity.
+    /// Verifies the CRC32 checksum of the data read so far.
+    ///
+    /// Should be called after reading all data to ensure integrity.
+    /// Returns an error if the computed CRC32 doesn't match the expected value.
     pub fn verify_crc32(&self) -> io::Result<()> {
         let computed_crc = self.crc32_hasher.clone().finalize();
         if computed_crc != self.expected_crc32 {

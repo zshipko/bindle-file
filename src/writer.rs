@@ -4,6 +4,25 @@ use std::io::{self, Seek, SeekFrom, Write};
 use crate::bindle::Bindle;
 use crate::entry::Entry;
 
+/// A streaming writer for adding entries to an archive.
+///
+/// Created by [`Bindle::writer()`]. Automatically compresses data if requested and computes CRC32 for integrity verification.
+///
+/// The writer must be closed with [`close()`](Writer::close) or will be automatically closed when dropped. After closing, call [`Bindle::save()`] to commit the index.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::io::Write;
+/// use bindle_file::{Bindle, Compress};
+///
+/// let mut archive = Bindle::open("data.bndl")?;
+/// let mut writer = archive.writer("file.txt", Compress::None)?;
+/// writer.write_all(b"data")?;
+/// writer.close()?;
+/// archive.save()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub struct Writer<'a> {
     pub(crate) bindle: &'a mut Bindle,
     pub(crate) encoder: Option<zstd::Encoder<'a, std::fs::File>>,
@@ -92,6 +111,9 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// Closes the writer and finalizes the entry.
+    ///
+    /// Automatically called when the writer is dropped, but calling explicitly allows error handling.
     pub fn close(mut self) -> io::Result<()> {
         self.close_drop()
     }

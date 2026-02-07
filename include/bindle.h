@@ -12,17 +12,84 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/**
+ * Compression mode for entries.
+ */
 enum BindleCompress {
+  /**
+   * No compression.
+   */
   BindleCompressNone = 0,
+  /**
+   * Zstandard compression.
+   */
   BindleCompressZstd = 1,
+  /**
+   * Automatically compress if entry is larger than 2KB threshold.
+   * Note: This is never stored on disk, only used as a policy hint.
+   */
   BindleCompressAuto = 2,
 };
 typedef uint8_t BindleCompress;
 
+/**
+ * A binary archive for collecting files.
+ *
+ * Uses memory-mapped I/O for fast reads, supports optional zstd compression, and handles updates via shadowing.
+ * Files can be added incrementally without rewriting the entire archive.
+ *
+ * # Example
+ *
+ * ```no_run
+ * use bindle_file::{Bindle, Compress};
+ *
+ * let mut archive = Bindle::open("data.bndl")?;
+ * archive.add("file.txt", b"data", Compress::None)?;
+ * archive.save()?;
+ * # Ok::<(), std::io::Error>(())
+ * ```
+ */
 typedef struct Bindle Bindle;
 
+/**
+ * A streaming reader for archive entries.
+ *
+ * Created by the archive's `reader()` method. Automatically decompresses compressed entries and tracks CRC32 for integrity verification.
+ *
+ * # Example
+ *
+ * ```no_run
+ * # use bindle_file::Bindle;
+ * # let archive = Bindle::open("data.bndl")?;
+ * let mut reader = archive.reader("file.txt")?;
+ * std::io::copy(&mut reader, &mut std::io::stdout())?;
+ * reader.verify_crc32()?;
+ * # Ok::<(), std::io::Error>(())
+ * ```
+ */
 typedef struct BindleReader BindleReader;
 
+/**
+ * A streaming writer for adding entries to an archive.
+ *
+ * Created by [`Bindle::writer()`]. Automatically compresses data if requested and computes CRC32 for integrity verification.
+ *
+ * The writer must be closed with [`close()`](Writer::close) or will be automatically closed when dropped. After closing, call [`Bindle::save()`] to commit the index.
+ *
+ * # Example
+ *
+ * ```no_run
+ * use std::io::Write;
+ * use bindle_file::{Bindle, Compress};
+ *
+ * let mut archive = Bindle::open("data.bndl")?;
+ * let mut writer = archive.writer("file.txt", Compress::None)?;
+ * writer.write_all(b"data")?;
+ * writer.close()?;
+ * archive.save()?;
+ * # Ok::<(), std::io::Error>(())
+ * ```
+ */
 typedef struct BindleWriter BindleWriter;
 
 /**

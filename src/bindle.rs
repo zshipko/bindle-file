@@ -13,10 +13,25 @@ use crate::entry::{Entry, Footer};
 use crate::reader::{Either, Reader};
 use crate::writer::Writer;
 use crate::{
-    pad, write_padding, AUTO_COMPRESS_THRESHOLD, BNDL_ALIGN, BNDL_MAGIC, ENTRY_SIZE, FOOTER_MAGIC,
-    FOOTER_SIZE, HEADER_SIZE,
+    AUTO_COMPRESS_THRESHOLD, BNDL_ALIGN, BNDL_MAGIC, ENTRY_SIZE, FOOTER_MAGIC, FOOTER_SIZE,
+    HEADER_SIZE, pad, write_padding,
 };
 
+/// A binary archive for collecting files.
+///
+/// Uses memory-mapped I/O for fast reads, supports optional zstd compression, and handles updates via shadowing.
+/// Files can be added incrementally without rewriting the entire archive.
+///
+/// # Example
+///
+/// ```no_run
+/// use bindle_file::{Bindle, Compress};
+///
+/// let mut archive = Bindle::open("data.bndl")?;
+/// archive.add("file.txt", b"data", Compress::None)?;
+/// archive.save()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub struct Bindle {
     pub(crate) path: PathBuf,
     pub(crate) file: File,
@@ -26,7 +41,7 @@ pub struct Bindle {
 }
 
 impl Bindle {
-    /// Create a new bindle file, this will overwrite the existing file
+    /// Creates a new archive, overwriting any existing file at the path.
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let opts = OpenOptions::new()
@@ -38,7 +53,7 @@ impl Bindle {
         Self::new(path_buf, opts)
     }
 
-    /// Open or create a bindle file
+    /// Opens an existing archive or creates a new one if it doesn't exist.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let opts = OpenOptions::new()
@@ -49,7 +64,7 @@ impl Bindle {
         Self::new(path_buf, opts)
     }
 
-    /// Open a bindle file, this will not create it if it doesn't exist
+    /// Opens an existing archive. Returns an error if the file doesn't exist.
     pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let opts = OpenOptions::new().read(true).write(true).to_owned();
@@ -93,9 +108,8 @@ impl Bindle {
 
         // Calculate footer position. Subtraction is now safe due to the check above.
         let footer_pos = m.len() - FOOTER_SIZE;
-        let footer = Footer::read_from_bytes(&m[footer_pos..]).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Failed to read footer")
-        })?;
+        let footer = Footer::read_from_bytes(&m[footer_pos..])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Failed to read footer"))?;
 
         if footer.magic() != FOOTER_MAGIC {
             return Err(io::Error::new(
@@ -147,6 +161,9 @@ impl Bindle {
         compress == Compress::Zstd || (compress == Compress::Auto && len > AUTO_COMPRESS_THRESHOLD)
     }
 
+    /// Adds data to the archive with the given name.
+    ///
+    /// If an entry with the same name exists, it will be shadowed. Call [`save()`](Bindle::save) to commit changes.
     pub fn add(&mut self, name: &str, data: &[u8], compress: Compress) -> io::Result<()> {
         let mut stream = self.writer(name, compress)?;
         stream.write_all(data)?;
@@ -154,6 +171,9 @@ impl Bindle {
         Ok(())
     }
 
+    /// Adds a file from the filesystem to the archive.
+    ///
+    /// Reads the file at `path` and stores it with the given `name`. Call [`save()`](Bindle::save) to commit changes.
     pub fn add_file(
         &mut self,
         name: &str,
@@ -166,6 +186,9 @@ impl Bindle {
         Ok(())
     }
 
+    /// Commits all pending changes by writing the index and footer to disk.
+    ///
+    /// Must be called after add/remove operations to make changes persistent.
     pub fn save(&mut self) -> io::Result<()> {
         self.file.lock_exclusive()?;
         self.file.seek(SeekFrom::Start(self.data_end))?;
@@ -193,6 +216,9 @@ impl Bindle {
         Ok(())
     }
 
+    /// Reclaims space by removing shadowed data.
+    ///
+    /// Rebuilds the archive with only live entries, removing old versions of updated files.
     pub fn vacuum(&mut self) -> io::Result<()> {
         let temp_path = self.path.with_extension("tmp");
 
@@ -256,7 +282,10 @@ impl Bindle {
 
         let footer_pos = mmap.len() - FOOTER_SIZE;
         let footer = Footer::read_from_bytes(&mmap[footer_pos..]).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Failed to read footer after vacuum")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Failed to read footer after vacuum",
+            )
         })?;
 
         self.file = temp_file;
@@ -266,6 +295,9 @@ impl Bindle {
         Ok(())
     }
 
+    /// Reads an entry from the archive, decompressing if needed.
+    ///
+    /// Returns `None` if the entry doesn't exist or if CRC32 verification fails.
     pub fn read<'a>(&'a self, name: &str) -> Option<Cow<'a, [u8]>> {
         let entry = self.index.get(name)?;
         let mmap = self.mmap.as_ref()?;
@@ -296,7 +328,9 @@ impl Bindle {
         Some(data)
     }
 
-    /// Read to an `std::io::Write`
+    /// Reads an entry and writes it to the given writer.
+    ///
+    /// Returns the number of bytes written. Verifies CRC32 after reading.
     pub fn read_to<W: std::io::Write>(&self, name: &str, mut w: W) -> std::io::Result<u64> {
         let mut reader = self.reader(name)?;
         let bytes_copied = std::io::copy(&mut reader, &mut w)?;
@@ -304,8 +338,9 @@ impl Bindle {
         Ok(bytes_copied)
     }
 
-    // Returns a seekable reader for an entry.
-    /// If compressed, it provides a transparently decompressing stream.
+    /// Returns a streaming reader for an entry.
+    ///
+    /// Automatically decompresses if the entry is compressed. Call [`Reader::verify_crc32()`] after reading to verify integrity.
     pub fn reader<'a>(&'a self, name: &str) -> io::Result<Reader<'a>> {
         let entry = self
             .index
@@ -339,39 +374,45 @@ impl Bindle {
         }
     }
 
-    /// The number of entries
+    /// Returns the number of entries in the archive.
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
-    /// Returns true if there are no entries
+    /// Returns true if the archive contains no entries.
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }
 
-    /// Direct readonly access to the index
+    /// Returns a reference to the archive index.
+    ///
+    /// The index maps entry names to their metadata.
     pub fn index(&self) -> &BTreeMap<String, Entry> {
         &self.index
     }
 
-    /// Clear all entries
+    /// Removes all entries from the index.
+    ///
+    /// Call [`save()`](Bindle::save) to commit. Data remains in the file until [`vacuum()`](Bindle::vacuum) is called.
     pub fn clear(&mut self) {
         self.index.clear()
     }
 
-    /// Checks if an entry exists in the archive index.
+    /// Returns true if an entry with the given name exists.
     pub fn exists(&self, name: &str) -> bool {
         self.index.contains_key(name)
     }
 
-    /// Remove an entry from the index.
-    /// The data remains in the file until vacuum() is called.
-    /// Returns true if the entry existed and was removed.
+    /// Removes an entry from the index.
+    ///
+    /// Returns true if the entry existed. Data remains in the file until [`vacuum()`](Bindle::vacuum) is called.
     pub fn remove(&mut self, name: &str) -> bool {
         self.index.remove(name).is_some()
     }
 
-    /// Recursively packs a directory into the archive.
+    /// Recursively adds all files from a directory to the archive.
+    ///
+    /// File paths are stored relative to the source directory. Call [`save()`](Bindle::save) to commit.
     pub fn pack<P: AsRef<Path>>(&mut self, src_dir: P, compress: Compress) -> io::Result<()> {
         self.pack_recursive(src_dir.as_ref(), src_dir.as_ref(), compress)
     }
@@ -398,7 +439,9 @@ impl Bindle {
         Ok(())
     }
 
-    /// Unpacks all archive entries to a destination directory.
+    /// Extracts all entries to a destination directory.
+    ///
+    /// Creates subdirectories as needed to match the stored paths.
     pub fn unpack<P: AsRef<Path>>(&self, dest: P) -> io::Result<()> {
         let dest_path = dest.as_ref();
         if let Some(parent) = dest_path.parent() {
@@ -416,6 +459,9 @@ impl Bindle {
         Ok(())
     }
 
+    /// Creates a streaming writer for adding an entry.
+    ///
+    /// The writer must be closed and then [`save()`](Bindle::save) must be called to commit the entry.
     pub fn writer<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Writer<'a>> {
         self.file.lock_exclusive()?;
         self.file.seek(SeekFrom::Start(self.data_end))?;

@@ -2,6 +2,10 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned};
 
 use crate::compress::Compress;
 
+/// Metadata for an entry in the archive.
+///
+/// Contains information about stored files including offset, size, compression, and CRC32 checksum.
+/// Retrieved via the archive's `index()` method.
 #[repr(C, packed)]
 #[derive(FromBytes, Unaligned, IntoBytes, Immutable, Clone, Copy, Debug, Default)]
 pub struct Entry {
@@ -20,46 +24,52 @@ pub struct Entry {
 // - On big-endian systems: bytes are swapped to/from little-endian
 
 impl Entry {
+    /// Returns the byte offset where this entry's data starts in the archive.
     pub fn offset(&self) -> u64 {
         u64::from_le(self.offset)
     }
 
-    pub fn set_offset(&mut self, value: u64) {
+    pub(crate) fn set_offset(&mut self, value: u64) {
         self.offset = value.to_le();
     }
 
+    /// Returns the compressed size of this entry in bytes.
     pub fn compressed_size(&self) -> u64 {
         u64::from_le(self.compressed_size)
     }
 
-    pub fn set_compressed_size(&mut self, value: u64) {
+    pub(crate) fn set_compressed_size(&mut self, value: u64) {
         self.compressed_size = value.to_le();
     }
 
+    /// Returns the uncompressed size of this entry in bytes.
     pub fn uncompressed_size(&self) -> u64 {
         u64::from_le(self.uncompressed_size)
     }
 
-    pub fn set_uncompressed_size(&mut self, value: u64) {
+    pub(crate) fn set_uncompressed_size(&mut self, value: u64) {
         self.uncompressed_size = value.to_le();
     }
 
+    /// Returns the CRC32 checksum of the uncompressed data.
     pub fn crc32(&self) -> u32 {
         u32::from_le(self.crc32)
     }
 
-    pub fn set_crc32(&mut self, value: u32) {
+    pub(crate) fn set_crc32(&mut self, value: u32) {
         self.crc32 = value.to_le();
     }
 
+    /// Returns the length of the entry name in bytes.
     pub fn name_len(&self) -> usize {
         u16::from_le(self.name_len) as usize
     }
 
-    pub fn set_name_len(&mut self, value: u16) {
+    pub(crate) fn set_name_len(&mut self, value: u16) {
         self.name_len = value.to_le();
     }
 
+    /// Returns the compression type for this entry.
     pub fn compression_type(&self) -> Compress {
         Compress::from_u8(self.compression_type)
     }
