@@ -36,10 +36,10 @@ where
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Compress {
-    None,
-    Zstd,
+    None = 0,
+    Zstd = 1,
     #[default]
-    Auto,
+    Auto = 2,
 }
 
 #[repr(C, packed)]
@@ -156,6 +156,10 @@ impl<'a> std::io::Write for Writer<'a> {
 
 impl<'a> Writer<'a> {
     pub fn write_chunk(&mut self, data: &[u8]) -> io::Result<()> {
+        if self.name.is_empty() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "closed"));
+        }
+
         self.uncompressed_size += data.len() as u64;
 
         if let Some(encoder) = &mut self.encoder {
@@ -168,14 +172,21 @@ impl<'a> Writer<'a> {
     }
 
     fn close_drop(&mut self) -> io::Result<()> {
-        let compression_type = if let Some(encoder) = self.encoder.take() {
-            encoder.finish()?;
-            1
+        if self.name.is_empty() {
+            return Ok(());
+        }
+
+        let (compression_type, current_pos) = if let Some(encoder) = self.encoder.take() {
+            let mut f = encoder.finish()?;
+            let pos = f.stream_position()?;
+            // Sync the main file handle to match the encoder's position
+            self.bindle.file.seek(SeekFrom::Start(pos))?;
+            (1, pos)
         } else {
-            0
+            let pos = self.bindle.file.stream_position()?;
+            (0, pos)
         };
 
-        let current_pos = self.bindle.file.stream_position()?;
         let compressed_size = current_pos - self.start_offset;
 
         // Handle 8-byte alignment padding
@@ -196,6 +207,7 @@ impl<'a> Writer<'a> {
         };
 
         self.bindle.index.insert(self.name.clone(), entry);
+        self.name.clear(); // Mark as closed
         Ok(())
     }
 
@@ -447,14 +459,18 @@ impl Bindle {
     pub fn read<'a>(&'a self, name: &str) -> Option<Cow<'a, [u8]>> {
         let entry = self.index.get(name)?;
         let mmap = self.mmap.as_ref()?;
-        let data =
-            mmap.get(entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize)?;
 
         if entry.compression_type == Compress::Zstd as u8 {
+            let data = mmap.get(
+                entry.offset() as usize..(entry.offset() + entry.compressed_size()) as usize,
+            )?;
             let mut out = Vec::with_capacity(entry.uncompressed_size() as usize);
             zstd::Decoder::new(data).ok()?.read_to_end(&mut out).ok()?;
             Some(Cow::Owned(out))
         } else {
+            let data = mmap.get(
+                entry.offset() as usize..(entry.offset() + entry.uncompressed_size()) as usize,
+            )?;
             Some(Cow::Borrowed(data))
         }
     }

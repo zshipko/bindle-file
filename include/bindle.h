@@ -13,9 +13,9 @@
 #include <stdbool.h>
 
 typedef enum BindleCompress {
-  BindleCompressNone,
-  BindleCompressZstd,
-  BindleCompressAuto,
+  BindleCompressNone = 0,
+  BindleCompressZstd = 1,
+  BindleCompressAuto = 2,
 } BindleCompress;
 
 typedef struct Bindle Bindle;
