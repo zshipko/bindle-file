@@ -8,3 +8,4 @@ c/test_dir*
 *.dylib
 *.so
 *.a
+test/runtest

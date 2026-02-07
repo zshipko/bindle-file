@@ -93,13 +93,50 @@ typedef struct BindleReader BindleReader;
 typedef struct BindleWriter BindleWriter;
 
 /**
- * Open a bindle file from disk, the path paramter should be NUL terminated
+ * Creates a new archive, overwriting any existing file.
+ *
+ * # Parameters
+ * * `path` - NUL-terminated path to the archive file
+ *
+ * # Returns
+ * A pointer to the Bindle handle, or NULL on error. Must be freed with `bindle_close()`.
+ */
+struct Bindle *bindle_create(const char *path);
+
+/**
+ * Opens an existing archive or creates a new one.
+ *
+ * # Parameters
+ * * `path` - NUL-terminated path to the archive file
+ *
+ * # Returns
+ * A pointer to the Bindle handle, or NULL on error. Must be freed with `bindle_close()`.
  */
 struct Bindle *bindle_open(const char *path);
 
 /**
- * Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
- * is provided
+ * Opens an existing archive. Returns NULL if the file doesn't exist.
+ *
+ * # Parameters
+ * * `path` - NUL-terminated path to the archive file
+ *
+ * # Returns
+ * A pointer to the Bindle handle, or NULL on error. Must be freed with `bindle_close()`.
+ */
+struct Bindle *bindle_load(const char *path);
+
+/**
+ * Adds data to the archive with the given name.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle from `bindle_open()`
+ * * `name` - NUL-terminated entry name
+ * * `data` - Data bytes (may contain NUL bytes)
+ * * `data_len` - Length of data in bytes
+ * * `compress` - Compression mode (BindleCompressNone, BindleCompressZstd, or BindleCompressAuto)
+ *
+ * # Returns
+ * True on success. Call `bindle_save()` to commit changes.
  */
 bool bindle_add(struct Bindle *ctx,
                 const char *name,
@@ -108,8 +145,16 @@ bool bindle_add(struct Bindle *ctx,
                 BindleCompress compress);
 
 /**
- * Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
- * is provided
+ * Adds a file from the filesystem to the archive.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle from `bindle_open()`
+ * * `name` - NUL-terminated entry name
+ * * `path` - NUL-terminated path to file on disk
+ * * `compress` - Compression mode
+ *
+ * # Returns
+ * True on success. Call `bindle_save()` to commit changes.
  */
 bool bindle_add_file(struct Bindle *ctx,
                      const char *name,
@@ -117,76 +162,136 @@ bool bindle_add_file(struct Bindle *ctx,
                      BindleCompress compress);
 
 /**
- * Save any changed to disk
+ * Commits all pending changes to disk.
+ *
+ * Writes the index and footer. Must be called after add/remove operations.
  */
 bool bindle_save(struct Bindle *ctx);
 
 /**
- * Close an open bindle file
+ * Closes the archive and frees the handle.
+ *
+ * After calling this, the ctx pointer is no longer valid.
  */
 void bindle_close(struct Bindle *ctx);
 
 /**
- * Read a value from a bindle file in memory, returns a pointer that should be freed with
- * `bindle_free_buffer`
+ * Reads an entry from the archive, decompressing if needed.
+ *
+ * # Parameters
+ * * `ctx_ptr` - Bindle handle
+ * * `name` - NUL-terminated entry name
+ * * `out_len` - Output parameter for data length
+ *
+ * # Returns
+ * Pointer to data buffer, or NULL if not found or CRC32 check fails.
+ * Must be freed with `bindle_free_buffer()`.
  */
 uint8_t *bindle_read(struct Bindle *ctx_ptr, const char *name, size_t *out_len);
 
 /**
- * Used to free the results from `bindle_read`
+ * Frees a buffer returned by `bindle_read()`.
  */
 void bindle_free_buffer(uint8_t *ptr);
 
 /**
- * Directly read an uncompressed entry from disk, returns NULL if the entry is compressed or doesn't exist
+ * Reads an uncompressed entry without allocating.
+ *
+ * Returns a pointer directly into the memory-mapped archive. Only works for uncompressed entries.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle
+ * * `name` - NUL-terminated entry name
+ * * `out_len` - Output parameter for data length
+ *
+ * # Returns
+ * Pointer into the mmap, or NULL if entry is compressed or doesn't exist.
+ * The pointer is valid as long as the Bindle handle is open. Do NOT free this pointer.
  */
 const uint8_t *bindle_read_uncompressed_direct(struct Bindle *ctx,
                                                const char *name,
                                                size_t *out_len);
 
 /**
- * Get the number of entries in a bindle file
+ * Returns the number of entries in the archive.
  */
 size_t bindle_length(const struct Bindle *ctx);
 
 /**
  * Returns the name of the entry at the given index.
- * The string is owned by the Bindle; the caller must NOT free it.
+ *
+ * Use with `bindle_length()` to iterate over all entries. The pointer is valid as long as the Bindle handle is open.
+ * Do NOT free the returned pointer.
  */
-const char *bindle_entry_name(const struct Bindle *ctx, size_t index, size_t *len);
+const char *bindle_entry_name(const struct Bindle *ctx,
+                              size_t index,
+                              size_t *len);
 
 /**
- * Compact and rewrite bindle file
+ * Reclaims space by removing shadowed data.
+ *
+ * Rebuilds the archive with only live entries.
  */
 bool bindle_vacuum(struct Bindle *ctx);
 
+/**
+ * Extracts all entries to a destination directory.
+ */
 bool bindle_unpack(struct Bindle *ctx, const char *dest_path);
 
+/**
+ * Recursively adds all files from a directory to the archive.
+ *
+ * Call `bindle_save()` to commit changes.
+ */
 bool bindle_pack(struct Bindle *ctx, const char *src_path, BindleCompress compress);
 
+/**
+ * Returns true if an entry with the given name exists.
+ */
 bool bindle_exists(const struct Bindle *ctx, const char *name);
 
 /**
- * Remove an entry from the index.
- * The data remains in the file until bindle_vacuum is called.
- * Returns true if the entry existed and was removed, false otherwise.
+ * Removes an entry from the index.
+ *
+ * Returns true if the entry existed. Data remains in the file until `bindle_vacuum()` is called.
+ * Call `bindle_save()` to commit changes.
  */
 bool bindle_remove(struct Bindle *ctx, const char *name);
 
 /**
- * Create a new Writer, while the stream is active (until bindle_stream_finish is called), the
- * Bindle struct should not be accessed.
+ * Creates a streaming writer for adding an entry.
+ *
+ * The writer must be closed with `bindle_writer_close()`, then call `bindle_save()` to commit.
+ * Do not access the Bindle handle while the writer is active.
  */
 struct BindleWriter *bindle_writer_new(struct Bindle *ctx,
                                        const char *name,
                                        BindleCompress compress);
 
+/**
+ * Writes data to the writer.
+ */
 bool bindle_writer_write(struct BindleWriter *stream, const uint8_t *data, size_t len);
 
+/**
+ * Closes the writer and finalizes the entry.
+ */
 bool bindle_writer_close(struct BindleWriter *stream);
 
+/**
+ * Creates a streaming reader for an entry.
+ *
+ * Automatically decompresses if needed. Must be freed with `bindle_reader_close()`.
+ * Call `bindle_reader_verify_crc32()` after reading to verify integrity.
+ */
 struct BindleReader *bindle_reader_new(const struct Bindle *ctx, const char *name);
 
+/**
+ * Reads data from the reader into the provided buffer.
+ *
+ * Returns the number of bytes read, or -1 on error. Returns 0 on EOF.
+ */
 ptrdiff_t bindle_reader_read(struct BindleReader *reader, uint8_t *buffer, size_t buffer_len);
 
 /**
@@ -196,6 +301,9 @@ ptrdiff_t bindle_reader_read(struct BindleReader *reader, uint8_t *buffer, size_
  */
 bool bindle_reader_verify_crc32(const struct BindleReader *reader);
 
+/**
+ * Closes the reader and frees the handle.
+ */
 void bindle_reader_close(struct BindleReader *reader);
 
 #endif  /* BINDLE_H */
