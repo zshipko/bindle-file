@@ -12,11 +12,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef enum BindleCompress {
+enum BindleCompress {
   BindleCompressNone = 0,
   BindleCompressZstd = 1,
   BindleCompressAuto = 2,
-} BindleCompress;
+};
+typedef uint8_t BindleCompress;
 
 typedef struct Bindle Bindle;
 
@@ -37,7 +38,7 @@ bool bindle_add(struct Bindle *ctx,
                 const char *name,
                 const uint8_t *data,
                 size_t data_len,
-                enum BindleCompress compress);
+                BindleCompress compress);
 
 /**
  * Adds a new entry, the name should be NUL terminated, will the data can contain NUL characters since the length
@@ -46,7 +47,7 @@ bool bindle_add(struct Bindle *ctx,
 bool bindle_add_file(struct Bindle *ctx,
                      const char *name,
                      const char *path,
-                     enum BindleCompress compress);
+                     BindleCompress compress);
 
 /**
  * Save any changed to disk
@@ -94,7 +95,7 @@ bool bindle_vacuum(struct Bindle *ctx);
 
 bool bindle_unpack(struct Bindle *ctx, const char *dest_path);
 
-bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress compress);
+bool bindle_pack(struct Bindle *ctx, const char *src_path, BindleCompress compress);
 
 bool bindle_exists(const struct Bindle *ctx, const char *name);
 
@@ -111,7 +112,7 @@ bool bindle_remove(struct Bindle *ctx, const char *name);
  */
 struct BindleWriter *bindle_writer_new(struct Bindle *ctx,
                                        const char *name,
-                                       enum BindleCompress compress);
+                                       BindleCompress compress);
 
 bool bindle_writer_write(struct BindleWriter *stream, const uint8_t *data, size_t len);
 

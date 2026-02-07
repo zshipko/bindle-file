@@ -1,0 +1,95 @@
+use crc32fast::Hasher;
+use std::io::{self, Seek, SeekFrom, Write};
+
+use crate::bindle::Bindle;
+use crate::entry::Entry;
+
+pub struct Writer<'a> {
+    pub(crate) bindle: &'a mut Bindle,
+    pub(crate) encoder: Option<zstd::Encoder<'a, std::fs::File>>,
+    pub(crate) name: String,
+    pub(crate) start_offset: u64,
+    pub(crate) uncompressed_size: u64,
+    pub(crate) crc32_hasher: Hasher,
+}
+
+impl<'a> Drop for Writer<'a> {
+    fn drop(&mut self) {
+        let _ = self.close_drop();
+    }
+}
+
+impl<'a> std::io::Write for Writer<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_chunk(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> Writer<'a> {
+    pub fn write_chunk(&mut self, data: &[u8]) -> io::Result<()> {
+        if self.name.is_empty() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "closed"));
+        }
+
+        self.uncompressed_size += data.len() as u64;
+        self.crc32_hasher.update(data);
+
+        if let Some(encoder) = &mut self.encoder {
+            encoder.write_all(data)?;
+        } else {
+            self.bindle.file.write_all(data)?;
+        }
+
+        Ok(())
+    }
+
+    fn close_drop(&mut self) -> io::Result<()> {
+        if self.name.is_empty() {
+            return Ok(());
+        }
+
+        let (compression_type, current_pos) = if let Some(encoder) = self.encoder.take() {
+            let mut f = encoder.finish()?;
+            let pos = f.stream_position()?;
+            // Sync the main file handle to match the encoder's position
+            self.bindle.file.seek(SeekFrom::Start(pos))?;
+            (1, pos)
+        } else {
+            let pos = self.bindle.file.stream_position()?;
+            (0, pos)
+        };
+
+        let compressed_size = current_pos - self.start_offset;
+
+        // Handle 8-byte alignment padding
+        let pad_len = crate::pad::<8, u64>(current_pos);
+        if pad_len > 0 {
+            crate::write_padding(&mut self.bindle.file, pad_len as usize)?;
+        }
+
+        self.bindle.data_end = current_pos + pad_len;
+
+        let crc32_value = self.crc32_hasher.clone().finalize();
+
+        let mut entry = Entry::default();
+        entry.set_offset(self.start_offset);
+        entry.set_compressed_size(compressed_size);
+        entry.set_uncompressed_size(self.uncompressed_size);
+        entry.set_crc32(crc32_value);
+        entry.set_name_len(self.name.len() as u16);
+        entry.compression_type = compression_type;
+
+        self.bindle.index.insert(self.name.clone(), entry);
+        self.name.clear(); // Mark as closed
+        Ok(())
+    }
+
+    pub fn close(mut self) -> io::Result<()> {
+        self.close_drop()
+    }
+}

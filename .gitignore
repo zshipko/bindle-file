@@ -5,3 +5,6 @@ c/bindle_c
 c/test
 c/input.txt
 c/test_dir*
+*.dylib
+*.so
+*.a
