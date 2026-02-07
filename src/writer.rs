@@ -58,10 +58,15 @@ impl<'a> Writer<'a> {
         self.uncompressed_size += data.len() as u64;
         self.crc32_hasher.update(data);
 
-        if let Some(encoder) = &mut self.encoder {
-            encoder.write_all(data)?;
-        } else {
-            self.bindle.file.write_all(data)?;
+        match &mut self.encoder {
+            Some(encoder) => {
+                // Compressed: write to zstd encoder
+                encoder.write_all(data)?;
+            }
+            None => {
+                // Uncompressed: write directly to file
+                self.bindle.file.write_all(data)?;
+            }
         }
 
         Ok(())
@@ -72,15 +77,19 @@ impl<'a> Writer<'a> {
             return Ok(());
         }
 
-        let (compression_type, current_pos) = if let Some(encoder) = self.encoder.take() {
-            let mut f = encoder.finish()?;
-            let pos = f.stream_position()?;
-            // Sync the main file handle to match the encoder's position
-            self.bindle.file.seek(SeekFrom::Start(pos))?;
-            (1, pos)
-        } else {
-            let pos = self.bindle.file.stream_position()?;
-            (0, pos)
+        let (compression_type, current_pos) = match self.encoder.take() {
+            Some(encoder) => {
+                // Compressed: finish encoder and sync position
+                let mut f = encoder.finish()?;
+                let pos = f.stream_position()?;
+                self.bindle.file.seek(SeekFrom::Start(pos))?;
+                (1, pos)
+            }
+            None => {
+                // Uncompressed: already wrote directly to file, just get position
+                let pos = self.bindle.file.stream_position()?;
+                (0, pos)
+            }
         };
 
         let compressed_size = current_pos - self.start_offset;

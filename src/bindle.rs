@@ -448,20 +448,35 @@ impl Bindle {
     /// Creates subdirectories as needed to match the stored paths.
     pub fn unpack<P: AsRef<Path>>(&self, dest: P) -> io::Result<()> {
         let dest_path = dest.as_ref();
-        if let Some(parent) = dest_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(dest_path)?;
+
+        // Collect all unique parent directories
+        let mut dirs = std::collections::HashSet::new();
+        for (name, _) in &self.index {
+            if let Some(parent) = Path::new(name).parent() {
+                // Only add non-empty parent paths
+                if parent != Path::new("") {
+                    dirs.insert(dest_path.join(parent));
+                }
+            }
+        }
+
+        // Create all directories upfront (sorted for parent-first order)
+        if !dirs.is_empty() {
+            let mut dirs: Vec<_> = dirs.into_iter().collect();
+            dirs.sort();
+            for dir in dirs {
+                std::fs::create_dir_all(&dir)?;
+            }
         }
 
         // Sort entries by physical offset for sequential reads (better cache locality)
         let mut entries: Vec<_> = self.index.iter().collect();
         entries.sort_by_key(|(_, entry)| entry.offset());
 
+        // Extract files without per-file directory checks
         for (name, _) in entries {
             let file_path = dest_path.join(name);
-            if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            // Use streaming I/O instead of loading entire file into memory
             let mut reader = self.reader(name)?;
             let mut file = File::create(&file_path)?;
             io::copy(&mut reader, &mut file)?;
@@ -482,7 +497,6 @@ impl Bindle {
         }
         let compress = self.should_auto_compress(compress, 0);
         let start_offset = self.data_end;
-        // Only clone file handle if needed for compression
         let encoder = if compress {
             let f = self.file.try_clone()?;
             Some(zstd::Encoder::new(f, 3)?)

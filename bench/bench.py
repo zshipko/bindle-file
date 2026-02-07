@@ -64,14 +64,14 @@ def create_test_data(base_dir: Path) -> None:
     )
 
 
-def benchmark_bindle_uncompressed(src_dir: Path, archive_path: Path) -> tuple[float, int, float]:
+def benchmark_bindle_uncompressed(bindle_bin: Path, src_dir: Path, archive_path: Path) -> tuple[float, int, float]:
     """Benchmark bindle without compression."""
     # Pack
     start = time.perf_counter()
     subprocess.run(
-        ["cargo", "run", "--release", "--", "pack", str(archive_path), str(src_dir)],
-        cwd=Path(__file__).parent.parent,
-        capture_output=True,
+        [str(bindle_bin), "pack", str(archive_path), str(src_dir)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
     )
     pack_time = time.perf_counter() - start
@@ -79,13 +79,13 @@ def benchmark_bindle_uncompressed(src_dir: Path, archive_path: Path) -> tuple[fl
     size = archive_path.stat().st_size
 
     # Unpack
-    extract_dir = archive_path.parent / "extract_bindle_none"
+    extract_dir = archive_path.parent / f"extract_{archive_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     start = time.perf_counter()
     subprocess.run(
-        ["cargo", "run", "--release", "--", "unpack", str(archive_path), str(extract_dir)],
-        cwd=Path(__file__).parent.parent,
-        capture_output=True,
+        [str(bindle_bin), "unpack", str(archive_path), str(extract_dir)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
     )
     unpack_time = time.perf_counter() - start
@@ -93,14 +93,14 @@ def benchmark_bindle_uncompressed(src_dir: Path, archive_path: Path) -> tuple[fl
     return pack_time, size, unpack_time
 
 
-def benchmark_bindle_compressed(src_dir: Path, archive_path: Path) -> tuple[float, int, float]:
+def benchmark_bindle_compressed(bindle_bin: Path, src_dir: Path, archive_path: Path) -> tuple[float, int, float]:
     """Benchmark bindle with zstd compression."""
     # Pack
     start = time.perf_counter()
     subprocess.run(
-        ["cargo", "run", "--release", "--", "pack", str(archive_path), str(src_dir), "--compress"],
-        cwd=Path(__file__).parent.parent,
-        capture_output=True,
+        [str(bindle_bin), "pack", str(archive_path), str(src_dir), "--compress"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
     )
     pack_time = time.perf_counter() - start
@@ -108,13 +108,13 @@ def benchmark_bindle_compressed(src_dir: Path, archive_path: Path) -> tuple[floa
     size = archive_path.stat().st_size
 
     # Unpack
-    extract_dir = archive_path.parent / "extract_bindle_zstd"
+    extract_dir = archive_path.parent / f"extract_{archive_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     start = time.perf_counter()
     subprocess.run(
-        ["cargo", "run", "--release", "--", "unpack", str(archive_path), str(extract_dir)],
-        cwd=Path(__file__).parent.parent,
-        capture_output=True,
+        [str(bindle_bin), "unpack", str(archive_path), str(extract_dir)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
     )
     unpack_time = time.perf_counter() - start
@@ -136,7 +136,7 @@ def benchmark_tar(src_dir: Path, archive_path: Path) -> tuple[float, int, float]
     size = archive_path.stat().st_size
 
     # Extract
-    extract_dir = archive_path.parent / "extract_tar"
+    extract_dir = archive_path.parent / f"extract_{archive_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     start = time.perf_counter()
     subprocess.run(
@@ -163,7 +163,7 @@ def benchmark_tar_gz(src_dir: Path, archive_path: Path) -> tuple[float, int, flo
     size = archive_path.stat().st_size
 
     # Extract
-    extract_dir = archive_path.parent / "extract_tar_gz"
+    extract_dir = archive_path.parent / f"extract_{archive_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     start = time.perf_counter()
     subprocess.run(
@@ -190,11 +190,11 @@ def benchmark_zip(src_dir: Path, archive_path: Path) -> tuple[float, int, float]
     size = archive_path.stat().st_size
 
     # Extract
-    extract_dir = archive_path.parent / "extract_zip"
+    extract_dir = archive_path.parent / f"extract_{archive_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     start = time.perf_counter()
     subprocess.run(
-        ["unzip", "-q", str(archive_path), "-d", str(extract_dir)],
+        ["unzip", "-o", "-q", str(archive_path), "-d", str(extract_dir)],
         capture_output=True,
         check=True,
     )
@@ -204,21 +204,41 @@ def benchmark_zip(src_dir: Path, archive_path: Path) -> tuple[float, int, float]
 
 
 def main():
+    project_root = Path(__file__).parent.parent
+
     print("Building bindle in release mode...")
     subprocess.run(
         ["cargo", "build", "--release", "--features", "cli"],
-        cwd=Path(__file__).parent.parent,
+        cwd=project_root,
         capture_output=True,
         check=True,
     )
 
+    # Get the built binary path
+    bindle_bin = project_root / "target" / "release" / "bindle"
+    if not bindle_bin.exists():
+        raise FileNotFoundError(f"Built binary not found at {bindle_bin}")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
 
+        # Ensure directories exist and warm up filesystem
+        test_data = tmpdir / "test_data"
+        test_data.mkdir(parents=True, exist_ok=True)
+
+        # Warm up: write and delete a small file to initialize filesystem
+        warmup_file = tmpdir / "warmup"
+        warmup_file.write_bytes(b"warmup" * 1000)
+        warmup_file.unlink()
+
         # Create test data
         print("Creating test dataset...")
-        test_data = tmpdir / "test_data"
         create_test_data(test_data)
+
+        # Warm up: read all test files to initialize filesystem caches
+        for f in test_data.rglob("*"):
+            if f.is_file():
+                _ = f.read_bytes()
 
         # Calculate total size
         total_size = sum(f.stat().st_size for f in test_data.rglob("*") if f.is_file())
@@ -227,29 +247,49 @@ def main():
         print(f"Test dataset: {file_count} files, {format_size(total_size)}\n")
 
         benchmarks = [
-            ("bindle (uncompressed)", lambda: benchmark_bindle_uncompressed(
-                test_data, tmpdir / "test.bndl"
+            ("bindle (uncompressed)", lambda run: benchmark_bindle_uncompressed(
+                bindle_bin, test_data, tmpdir / f"test_{run}.bndl"
             )),
-            ("bindle (zstd)", lambda: benchmark_bindle_compressed(
-                test_data, tmpdir / "test_zstd.bndl"
+            ("bindle (zstd)", lambda run: benchmark_bindle_compressed(
+                bindle_bin, test_data, tmpdir / f"test_zstd_{run}.bndl"
             )),
-            ("tar", lambda: benchmark_tar(
-                test_data, tmpdir / "test.tar"
+            ("tar", lambda run: benchmark_tar(
+                test_data, tmpdir / f"test_{run}.tar"
             )),
-            ("tar.gz", lambda: benchmark_tar_gz(
-                test_data, tmpdir / "test.tar.gz"
+            ("tar.gz", lambda run: benchmark_tar_gz(
+                test_data, tmpdir / f"test_{run}.tar.gz"
             )),
-            ("zip", lambda: benchmark_zip(
-                test_data, tmpdir / "test.zip"
+            ("zip", lambda run: benchmark_zip(
+                test_data, tmpdir / f"test_{run}.zip"
             )),
         ]
 
         results = []
+        num_runs = 4  # Run each test 4 times, discard first, average remaining 3
+
         for name, bench_fn in benchmarks:
             print(f"Benchmarking {name}...", flush=True)
             try:
-                pack_time, size, unpack_time = bench_fn()
-                results.append((name, pack_time, size, unpack_time))
+                pack_times = []
+                unpack_times = []
+                size = 0
+
+                for run in range(num_runs):
+                    pack_time, run_size, unpack_time = bench_fn(run)
+                    pack_times.append(pack_time)
+                    unpack_times.append(unpack_time)
+                    size = run_size
+
+                # Discard first run, average the rest
+                avg_pack = sum(pack_times[1:]) / (num_runs - 1)
+                avg_unpack = sum(unpack_times[1:]) / (num_runs - 1)
+
+                results.append((name, avg_pack, size, avg_unpack))
+            except subprocess.CalledProcessError as e:
+                print(f"  ERROR: Command failed with exit code {e.returncode}")
+                if e.stderr:
+                    print(f"  stderr: {e.stderr.decode()}")
+                results.append((name, 0, 0, 0))
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append((name, 0, 0, 0))
