@@ -2,6 +2,14 @@
 name = "bindle-file"
 version = "0.1.0"
 edition = "2024"
+authors = ["Zach Shipko <zachshipko@gmail.com>"]
+license = "ISC"
+keywords = ["archive", "file format"]
+readme = "README.md"
+description = "an efficient binary archive format"
+documentation = "https://docs.rs/bindle-file"
+repository = "https://tangled.org/zachshipko.com/bindle-file"
+default-run = "bindle"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
@@ -10,14 +18,13 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 name = "bindle"
 required-features = ["cli"]
 
-
 [dependencies]
 crc32fast = "1.5.0"
 memmap2 = "0.9.9"
 zerocopy = { version = "0.8", features = ["std", "derive"] }
 zstd = "0.13"
-clap = { version = "4.5", features = ["derive"], optional = true }
 fs2 = "0.4"
+clap = { version = "4.5", features = ["derive"], optional = true }
 
 [features]
 default = ["cli"]
