@@ -4,7 +4,15 @@
 
 The format uses memory-mapped I/O for fast reads, optional zstd compression, and supports append-only writes with shadowing for updates. Files can be added incrementally without rewriting the entire archive.
 
-## Usage
+## Installation
+
+The CLI can be installed by running:
+
+```sh
+cargo install bindle-file
+```
+
+## Rust
 
 ```rust
 use bindle_file::{Bindle, Compress};
@@ -27,9 +35,7 @@ archive.save()?;
 archive.vacuum()?;
 ```
 
-## C API
-
-The library includes C bindings:
+## C
 
 ```c
 #include "bindle.h"
