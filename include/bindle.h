@@ -3,11 +3,6 @@
 #ifndef BINDLE_H
 #define BINDLE_H
 
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -15,7 +10,7 @@
 /**
  * Compression mode for entries.
  */
-enum BindleCompress {
+typedef enum BindleCompress {
   /**
    * No compression.
    */
@@ -29,8 +24,7 @@ enum BindleCompress {
    * Note: This is never stored on disk, only used as a policy hint.
    */
   BindleCompressAuto = 2,
-};
-typedef uint8_t BindleCompress;
+} BindleCompress;
 
 /**
  * A binary archive for collecting files.
@@ -142,7 +136,7 @@ bool bindle_add(struct Bindle *ctx,
                 const char *name,
                 const uint8_t *data,
                 size_t data_len,
-                BindleCompress compress);
+                enum BindleCompress compress);
 
 /**
  * Adds a file from the filesystem to the archive.
@@ -159,7 +153,7 @@ bool bindle_add(struct Bindle *ctx,
 bool bindle_add_file(struct Bindle *ctx,
                      const char *name,
                      const char *path,
-                     BindleCompress compress);
+                     enum BindleCompress compress);
 
 /**
  * Commits all pending changes to disk.
@@ -244,7 +238,7 @@ bool bindle_unpack(struct Bindle *ctx, const char *dest_path);
  *
  * Call `bindle_save()` to commit changes.
  */
-bool bindle_pack(struct Bindle *ctx, const char *src_path, BindleCompress compress);
+bool bindle_pack(struct Bindle *ctx, const char *src_path, enum BindleCompress compress);
 
 /**
  * Returns true if an entry with the given name exists.
@@ -267,7 +261,7 @@ bool bindle_remove(struct Bindle *ctx, const char *name);
  */
 struct BindleWriter *bindle_writer_new(struct Bindle *ctx,
                                        const char *name,
-                                       BindleCompress compress);
+                                       enum BindleCompress compress);
 
 /**
  * Writes data to the writer.

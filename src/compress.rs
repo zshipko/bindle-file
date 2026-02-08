@@ -1,5 +1,5 @@
 /// Compression mode for entries.
-#[repr(u8)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Compress {
     /// No compression.
