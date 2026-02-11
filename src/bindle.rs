@@ -1,5 +1,4 @@
 use crc32fast::Hasher;
-use fs2::FileExt;
 use memmap2::Mmap;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -190,7 +189,7 @@ impl Bindle {
     ///
     /// Must be called after add/remove operations to make changes persistent.
     pub fn save(&mut self) -> io::Result<()> {
-        self.file.lock_exclusive()?;
+        self.file.lock()?;
         self.file.seek(SeekFrom::Start(self.data_end))?;
         let index_start = self.data_end;
 
@@ -235,7 +234,7 @@ impl Bindle {
             .truncate(true)
             .open(&temp_path)?;
 
-        temp_file.lock_exclusive()?;
+        temp_file.lock()?;
         temp_file.write_all(BNDL_MAGIC)?;
         let mut current_offset = HEADER_SIZE as u64;
 
@@ -272,7 +271,7 @@ impl Bindle {
         temp_file.sync_all()?;
 
         // Acquire exclusive lock just before rename to prevent concurrent access
-        self.file.lock_exclusive()?;
+        self.file.lock()?;
 
         // Release locks and close current file
         drop(self.mmap.take());
@@ -511,7 +510,7 @@ impl Bindle {
     ///
     /// The writer must be closed and then [`save()`](Bindle::save) must be called to commit the entry.
     pub fn writer<'a>(&'a mut self, name: &str, compress: Compress) -> io::Result<Writer<'a>> {
-        self.file.lock_exclusive()?;
+        self.file.lock()?;
         // Only seek if not already at the correct position
         let current_pos = self.file.stream_position()?;
         if current_pos != self.data_end {

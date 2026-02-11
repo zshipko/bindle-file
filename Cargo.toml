@@ -10,6 +10,7 @@ description = "an efficient binary archive format"
 documentation = "https://docs.rs/bindle-file"
 repository = "https://tangled.org/zachshipko.com/bindle-file"
 default-run = "bindle"
+rust-version = "1.89.0"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
@@ -23,7 +24,6 @@ crc32fast = "1.5.0"
 memmap2 = "0.9.9"
 zerocopy = { version = "0.8", features = ["std", "derive"] }
 zstd = "0.13"
-fs2 = "0.4"
 clap = { version = "4.5", features = ["derive"], optional = true }
 
 [features]
