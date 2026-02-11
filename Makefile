@@ -2,7 +2,7 @@ prefix?=/usr/local
 
 build:
 	cargo build --release
-	cp target/release/libbindle_file.a .
+	cp target/release/libbindle_file.a ./libbindle.a
 	cp target/release/libbindle_file.so libbindle.so || cp target/release/libbindle_file.dylib libbindle.dylib
 
 install:
