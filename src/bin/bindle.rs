@@ -215,13 +215,17 @@ fn handle_command(command: Commands) -> io::Result<()> {
             output,
         } => {
             let b = init_load(bindle_file.clone());
-            let res = if let Some(output) = output {
+            let res = if let Some(output) = &output {
                 b.read_to(name.as_str(), std::fs::File::create(output)?)
             } else {
                 b.read_to(name.as_str(), io::stdout())
             };
             match res {
-                Ok(_n) => {}
+                Ok(_n) => {
+                    if output.is_some() {
+                        println!("OK")
+                    }
+                }
                 Err(e) => {
                     return Err(io::Error::new(io::ErrorKind::NotFound, e));
                 }
