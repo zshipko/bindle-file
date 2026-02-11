@@ -44,9 +44,9 @@ Bindle* bindle = bindle_open("data.bndl");
 bindle_add(bindle, "file.txt", data, len, BindleCompressNone);
 bindle_save(bindle);
 
-size_t size;
-uint8_t* data = bindle_read(bindle, "file.txt", &size);
-
+size_t len = bindle_entry_size(bindle, "file.txt");
+uint8_t *data = malloc(len);
+assert(bindle_read(bindle, "file.txt", data) == len);
 // Or for uncompressed entries, read directly without decompression
 uint8_t* raw = bindle_read_uncompressed_direct(bindle, "file.txt", &size);
 

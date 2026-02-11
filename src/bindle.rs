@@ -333,6 +333,28 @@ impl Bindle {
         Some(data)
     }
 
+    /// Reads an entry into a provided buffer, avoiding allocation.
+    ///
+    /// Decompresses if needed and verifies CRC32. Returns the number of bytes read.
+    /// If the buffer is too small, only reads up to buffer.len() bytes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bindle_file::Bindle;
+    ///
+    /// let archive = Bindle::open("data.bndl")?;
+    /// let mut buffer = vec![0u8; 1024];
+    /// let bytes_read = archive.read_into("file.txt", &mut buffer)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn read_into(&self, name: &str, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut reader = self.reader(name)?;
+        let bytes_read = reader.read(buffer)?;
+        reader.verify_crc32()?;
+        Ok(bytes_read)
+    }
+
     /// Reads an entry and writes it to the given writer.
     ///
     /// Returns the number of bytes written. Verifies CRC32 after reading.

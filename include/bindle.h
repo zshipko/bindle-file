@@ -181,7 +181,7 @@ void bindle_close(struct Bindle *ctx);
  * Pointer to data buffer, or NULL if not found or CRC32 check fails.
  * Must be freed with `bindle_free_buffer()`.
  */
-uint8_t *bindle_read(struct Bindle *ctx_ptr, const char *name, size_t *out_len);
+uint8_t *bindle_read_buffer(struct Bindle *ctx_ptr, const char *name, size_t *out_len);
 
 /**
  * Frees a buffer returned by `bindle_read()`.
@@ -212,14 +212,13 @@ const uint8_t *bindle_read_uncompressed_direct(struct Bindle *ctx,
 size_t bindle_length(const struct Bindle *ctx);
 
 /**
- * Returns the name of the entry at the given index.
+ * Returns the name of the entry at the given index as a null-terminated C string.
  *
  * Use with `bindle_length()` to iterate over all entries. The pointer is valid as long as the Bindle handle is open.
  * Do NOT free the returned pointer.
  */
 const char *bindle_entry_name(const struct Bindle *ctx,
-                              size_t index,
-                              size_t *len);
+                              size_t index);
 
 /**
  * Reclaims space by removing shadowed data.
@@ -299,5 +298,47 @@ bool bindle_reader_verify_crc32(const struct BindleReader *reader);
  * Closes the reader and frees the handle.
  */
 void bindle_reader_close(struct BindleReader *reader);
+
+/**
+ * Gets the uncompressed size of an entry by name.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle
+ * * `name` - NUL-terminated entry name
+ *
+ * # Returns
+ * The uncompressed size in bytes, or 0 if the entry doesn't exist.
+ * Note: Returns 0 for both non-existent entries and zero-length entries.
+ */
+size_t bindle_entry_size(const struct Bindle *ctx, const char *name);
+
+/**
+ * Gets the compression type of an entry by name.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle
+ * * `name` - NUL-terminated entry name
+ *
+ * # Returns
+ * The Compress value (0 = None, 1 = Zstd), or 0 if the entry doesn't exist.
+ */
+enum BindleCompress bindle_entry_compress(const struct Bindle *ctx, const char *name);
+
+/**
+ * Reads an entry into a pre-existing buffer.
+ *
+ * Decompresses if needed and verifies CRC32. Reads up to `buffer_len` bytes.
+ *
+ * # Parameters
+ * * `ctx` - Bindle handle
+ * * `name` - NUL-terminated entry name
+ * * `buffer` - Pre-allocated buffer to read into
+ * * `buffer_len` - Maximum number of bytes to read
+ *
+ * # Returns
+ * The number of bytes actually read, or 0 if the entry doesn't exist or CRC32 check fails.
+ * If the entry is larger than `buffer_len`, only `buffer_len` bytes are read.
+ */
+size_t bindle_read(const struct Bindle *ctx, const char *name, uint8_t *buffer, size_t buffer_len);
 
 #endif  /* BINDLE_H */

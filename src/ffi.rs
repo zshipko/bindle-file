@@ -1,11 +1,37 @@
 use std::alloc::{Layout, dealloc};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::io::{Read, Write};
 use std::mem;
 use std::os::raw::c_char;
 use std::slice;
 
-use crate::{Bindle, Compress, Reader, Writer};
+use crate::{Compress, Reader, Writer};
+
+/// FFI wrapper around Bindle that caches null-terminated entry names for C API.
+pub struct Bindle {
+    bindle: crate::Bindle,
+    entry_names_cache: Vec<CString>,
+}
+
+impl Bindle {
+    fn new(bindle: crate::Bindle) -> Self {
+        let mut ffi = Bindle {
+            bindle,
+            entry_names_cache: Vec::new(),
+        };
+        ffi.rebuild_cache();
+        ffi
+    }
+
+    fn rebuild_cache(&mut self) {
+        self.entry_names_cache.clear();
+        for (name, _) in &self.bindle.index {
+            if let Ok(c_str) = CString::new(name.as_str()) {
+                self.entry_names_cache.push(c_str);
+            }
+        }
+    }
+}
 
 /// Creates a new archive, overwriting any existing file.
 ///
@@ -27,8 +53,8 @@ pub unsafe extern "C" fn bindle_create(path: *const c_char) -> *mut Bindle {
         }
     };
 
-    match Bindle::create(path_str) {
-        Ok(b) => Box::into_raw(Box::new(b)),
+    match crate::Bindle::create(path_str) {
+        Ok(b) => Box::into_raw(Box::new(Bindle::new(b))),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -53,8 +79,8 @@ pub unsafe extern "C" fn bindle_open(path: *const c_char) -> *mut Bindle {
         }
     };
 
-    match Bindle::open(path_str) {
-        Ok(b) => Box::into_raw(Box::new(b)),
+    match crate::Bindle::open(path_str) {
+        Ok(b) => Box::into_raw(Box::new(Bindle::new(b))),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -79,8 +105,8 @@ pub unsafe extern "C" fn bindle_load(path: *const c_char) -> *mut Bindle {
         }
     };
 
-    match Bindle::load(path_str) {
-        Ok(b) => Box::into_raw(Box::new(b)),
+    match crate::Bindle::load(path_str) {
+        Ok(b) => Box::into_raw(Box::new(Bindle::new(b))),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -117,7 +143,11 @@ pub unsafe extern "C" fn bindle_add(
         let data_slice = slice::from_raw_parts(data, data_len);
         let b = &mut (*ctx);
 
-        b.add(name_str, data_slice, compress).is_ok()
+        let result = b.bindle.add(name_str, data_slice, compress).is_ok();
+        if result {
+            b.rebuild_cache();
+        }
+        result
     }
 }
 
@@ -155,7 +185,11 @@ pub unsafe extern "C" fn bindle_add_file(
 
         let b = &mut (*ctx);
 
-        b.add_file(name_str, path_str, compress).is_ok()
+        let result = b.bindle.add_file(name_str, path_str, compress).is_ok();
+        if result {
+            b.rebuild_cache();
+        }
+        result
     }
 }
 
@@ -169,7 +203,7 @@ pub unsafe extern "C" fn bindle_save(ctx: *mut Bindle) -> bool {
     }
     unsafe {
         let b = &mut (*ctx);
-        b.save().is_ok()
+        b.bindle.save().is_ok()
     }
 }
 
@@ -195,7 +229,7 @@ pub unsafe extern "C" fn bindle_close(ctx: *mut Bindle) {
 /// Pointer to data buffer, or NULL if not found or CRC32 check fails.
 /// Must be freed with `bindle_free_buffer()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_read(
+pub unsafe extern "C" fn bindle_read_buffer(
     ctx_ptr: *mut Bindle,
     name: *const c_char,
     out_len: *mut usize,
@@ -216,8 +250,7 @@ pub unsafe extern "C" fn bindle_read(
         let ctx = &mut *ctx_ptr;
 
         // 3. The actual data retrieval logic
-        // (Assuming your Rust Bindle has a method like .get(name))
-        match ctx.read(name_str) {
+        match ctx.bindle.read(name_str) {
             Some(bytes) => wrap_in_ffi_header(bytes.as_ref(), out_len),
             None => return std::ptr::null_mut(),
         }
@@ -307,7 +340,7 @@ pub unsafe extern "C" fn bindle_read_uncompressed_direct(
         };
 
         let b = &(*ctx);
-        if let Some(data) = b.read(name_str) {
+        if let Some(data) = b.bindle.read(name_str) {
             match data {
                 std::borrow::Cow::Borrowed(bytes) => bytes.as_ptr(),
                 _ => std::ptr::null_mut(),
@@ -324,31 +357,22 @@ pub unsafe extern "C" fn bindle_length(ctx: *const Bindle) -> usize {
     if ctx.is_null() {
         return 0;
     }
-    unsafe { (*ctx).len() }
+    unsafe { (*ctx).bindle.len() }
 }
 
-/// Returns the name of the entry at the given index.
+/// Returns the name of the entry at the given index as a null-terminated C string.
 ///
 /// Use with `bindle_length()` to iterate over all entries. The pointer is valid as long as the Bindle handle is open.
 /// Do NOT free the returned pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bindle_entry_name(
-    ctx: *const Bindle,
-    index: usize,
-    len: *mut usize,
-) -> *const c_char {
+pub unsafe extern "C" fn bindle_entry_name(ctx: *const Bindle, index: usize) -> *const c_char {
     if ctx.is_null() {
         return std::ptr::null();
     }
 
     let b = unsafe { &(*ctx) };
-    match b.index.iter().nth(index) {
-        Some((name, _)) => {
-            unsafe {
-                *len = name.as_bytes().len();
-            }
-            name.as_ptr() as *const _
-        }
+    match b.entry_names_cache.get(index) {
+        Some(c_str) => c_str.as_ptr(),
         None => std::ptr::null(),
     }
 }
@@ -362,7 +386,11 @@ pub unsafe extern "C" fn bindle_vacuum(ctx: *mut Bindle) -> bool {
         return false;
     }
     let b = unsafe { &mut (*ctx) };
-    b.vacuum().is_ok()
+    let result = b.bindle.vacuum().is_ok();
+    if result {
+        b.rebuild_cache();
+    }
+    result
 }
 
 /// Extracts all entries to a destination directory.
@@ -373,7 +401,7 @@ pub unsafe extern "C" fn bindle_unpack(ctx: *mut Bindle, dest_path: *const c_cha
     }
     let b = unsafe { &*ctx };
     let path = unsafe { CStr::from_ptr(dest_path).to_string_lossy() };
-    b.unpack(path.as_ref()).is_ok()
+    b.bindle.unpack(path.as_ref()).is_ok()
 }
 
 /// Recursively adds all files from a directory to the archive.
@@ -390,7 +418,11 @@ pub unsafe extern "C" fn bindle_pack(
     }
     let b = unsafe { &mut *ctx };
     let path = unsafe { CStr::from_ptr(src_path).to_string_lossy() };
-    b.pack(path.as_ref(), compress).is_ok()
+    let result = b.bindle.pack(path.as_ref(), compress).is_ok();
+    if result {
+        b.rebuild_cache();
+    }
+    result
 }
 
 /// Returns true if an entry with the given name exists.
@@ -408,7 +440,7 @@ pub unsafe extern "C" fn bindle_exists(ctx: *const Bindle, name: *const c_char) 
         }
     };
 
-    b.exists(name_str)
+    b.bindle.exists(name_str)
 }
 
 /// Removes an entry from the index.
@@ -429,7 +461,11 @@ pub unsafe extern "C" fn bindle_remove(ctx: *mut Bindle, name: *const c_char) ->
         }
     };
 
-    b.remove(name_str)
+    let result = b.bindle.remove(name_str);
+    if result {
+        b.rebuild_cache();
+    }
+    result
 }
 
 /// Creates a streaming writer for adding an entry.
@@ -446,7 +482,7 @@ pub unsafe extern "C" fn bindle_writer_new<'a>(
         let b = &mut *ctx;
         let name_str = CStr::from_ptr(name).to_string_lossy();
 
-        match b.writer(&name_str, compress) {
+        match b.bindle.writer(&name_str, compress) {
             Ok(stream) => Box::into_raw(Box::new(std::mem::transmute(stream))),
             Err(_) => std::ptr::null_mut(),
         }
@@ -490,7 +526,7 @@ pub unsafe extern "C" fn bindle_reader_new<'a>(
     let b = unsafe { &*ctx };
     let name_str = unsafe { CStr::from_ptr(name).to_string_lossy() };
 
-    match b.reader(&name_str) {
+    match b.bindle.reader(&name_str) {
         Ok(reader) => Box::into_raw(Box::new(reader)),
         Err(_) => std::ptr::null_mut(),
     }
@@ -537,6 +573,109 @@ pub unsafe extern "C" fn bindle_reader_close(reader: *mut Reader) {
     if !reader.is_null() {
         unsafe {
             drop(Box::from_raw(reader));
+        }
+    }
+}
+
+/// Gets the uncompressed size of an entry by name.
+///
+/// # Parameters
+/// * `ctx` - Bindle handle
+/// * `name` - NUL-terminated entry name
+///
+/// # Returns
+/// The uncompressed size in bytes, or 0 if the entry doesn't exist.
+/// Note: Returns 0 for both non-existent entries and zero-length entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_entry_size(ctx: *const Bindle, name: *const c_char) -> usize {
+    if ctx.is_null() || name.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        let b = &*ctx;
+        match b.bindle.index.get(name_str) {
+            Some(entry) => entry.uncompressed_size() as usize,
+            None => 0,
+        }
+    }
+}
+
+/// Gets the compression type of an entry by name.
+///
+/// # Parameters
+/// * `ctx` - Bindle handle
+/// * `name` - NUL-terminated entry name
+///
+/// # Returns
+/// The Compress value (0 = None, 1 = Zstd), or 0 if the entry doesn't exist.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_entry_compress(ctx: *const Bindle, name: *const c_char) -> Compress {
+    if ctx.is_null() || name.is_null() {
+        return Compress::None;
+    }
+
+    unsafe {
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return Compress::None,
+        };
+
+        let b = &*ctx;
+        match b.bindle.index.get(name_str) {
+            Some(entry) => {
+                if entry.compression_type == 1 {
+                    Compress::Zstd
+                } else {
+                    Compress::None
+                }
+            }
+            None => Compress::None,
+        }
+    }
+}
+
+/// Reads an entry into a pre-existing buffer.
+///
+/// Decompresses if needed and verifies CRC32. Reads up to `buffer_len` bytes.
+///
+/// # Parameters
+/// * `ctx` - Bindle handle
+/// * `name` - NUL-terminated entry name
+/// * `buffer` - Pre-allocated buffer to read into
+/// * `buffer_len` - Maximum number of bytes to read
+///
+/// # Returns
+/// The number of bytes actually read, or 0 if the entry doesn't exist or CRC32 check fails.
+/// If the entry is larger than `buffer_len`, only `buffer_len` bytes are read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bindle_read(
+    ctx: *const Bindle,
+    name: *const c_char,
+    buffer: *mut u8,
+    buffer_len: usize,
+) -> usize {
+    if ctx.is_null() || name.is_null() || buffer.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        let b = &*ctx;
+        let buffer_slice = slice::from_raw_parts_mut(buffer, buffer_len);
+
+        match b.bindle.read_into(name_str, buffer_slice) {
+            Ok(bytes_read) => bytes_read,
+            Err(_) => 0,
         }
     }
 }
