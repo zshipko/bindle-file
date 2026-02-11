@@ -45,13 +45,17 @@ enum Commands {
         vacuum: bool,
     },
 
-    /// Extract an entry's data to stdout
-    Cat {
+    #[command(visible_alias = "cat")]
+    /// Extract an entry's data
+    Read {
         /// Bindle archive file
         #[arg(value_name = "BINDLE_FILE")]
         bindle_file: PathBuf,
         /// Name of the entry to extract
         name: String,
+        /// Output path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 
     /// Remove an entry from the archive
@@ -205,9 +209,18 @@ fn handle_command(command: Commands) -> io::Result<()> {
             println!("OK");
         }
 
-        Commands::Cat { name, bindle_file } => {
+        Commands::Read {
+            name,
+            bindle_file,
+            output,
+        } => {
             let b = init_load(bindle_file.clone());
-            match b.read_to(name.as_str(), io::stdout()) {
+            let res = if let Some(output) = output {
+                b.read_to(name.as_str(), std::fs::File::create(output)?)
+            } else {
+                b.read_to(name.as_str(), io::stdout())
+            };
+            match res {
                 Ok(_n) => {}
                 Err(e) => {
                     return Err(io::Error::new(io::ErrorKind::NotFound, e));
